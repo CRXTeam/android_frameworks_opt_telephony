@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2010-2013, The Linux Foundation. All rights reserved.
- * Not a Contribution.
+ * Copyright (C) 2014 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,131 +15,101 @@
  */
 
 package com.android.internal.telephony.dataconnection;
-import com.android.internal.telephony.RILConstants;
 
-public abstract class DataProfile {
+import android.os.Parcel;
+import android.telephony.ServiceState;
 
-    protected final static String LOG_TAG = "DataProfile";
+public class DataProfile {
 
-    public final int id;
+    static final int TYPE_COMMON = 0;
+    static final int TYPE_3GPP = 1;
+    static final int TYPE_3GPP2 = 2;
+
+    //id of the data profile
+    public final int profileId;
+    //the APN to connect to
     public final String apn;
-    public final String user;
-    public final String password;
-    public final int    authType;
+    //one of the PDP_type values in TS 27.007 section 10.1.1.
+    //For example, "IP", "IPV6", "IPV4V6", or "PPP".
     public final String protocol;
-    public final String roamingProtocol;
-    public final String numeric;
+    //authentication protocol used for this PDP context
+    //(None: 0, PAP: 1, CHAP: 2, PAP&CHAP: 3)
+    public final int authType;
+    //the username for APN, or NULL
+    public final String user;
+    //the password for APN, or NULL
+    public final String password;
+    //the profile type, TYPE_COMMON, TYPE_3GPP, TYPE_3GPP2
+    public final int type;
+    //the period in seconds to limit the maximum connections
+    public final int maxConnsTime;
+    //the maximum connections during maxConnsTime
+    public final int maxConns;
+    //the required wait time in seconds after a successful UE initiated
+    //disconnect of a given PDN connection before the device can send
+    //a new PDN connection request for that given PDN
+    public final int waitTime;
+    //true to enable the profile, false to disable
+    public final boolean enabled;
 
-    public String carrier;
-    public String proxy;
-    public String port;
-    public String mmsc;
-    public String mmsProxy;
-    public String mmsPort;
 
-    /**
-     * Current status of APN
-     * true : enabled APN, false : disabled APN.
-     */
-    public boolean carrierEnabled;
+    DataProfile(int profileId, String apn, String protocol, int authType,
+            String user, String password, int type, int maxConnsTime, int maxConns,
+            int waitTime, boolean enabled) {
 
-    /**
-     * Radio Access Technology info
-     * To check what values can hold, refer to ServiceState.java.
-     * This should be spread to other technologies,
-     * but currently only used for LTE(14) and EHRPD(13).
-     */
-    public final int bearer;
-
-    public String[] types;
-
-    public enum DataProfileType {
-        PROFILE_TYPE_APN(0),
-        PROFILE_TYPE_CDMA(1),
-        PROFILE_TYPE_OMH(2);
-
-        int id;
-
-        private DataProfileType(int i) {
-            this.id = i;
-        }
-
-        public int getid() {
-            return id;
-        }
-    }
-
-    private DataConnection mDc = null;
-
-    public DataProfile (int id, String numeric, String apn, String user, String password,
-            int authType, String[] types, String protocol, String roamingProtocol, int bearer) {
-        this(id, numeric, apn, user, password, authType, types, protocol, roamingProtocol,
-                bearer, "", "", "", "", "", "", false);
-    }
-
-    public DataProfile (int id, String numeric, String apn, String user, String password,
-            int authType, String[] types, String protocol, String roamingProtocol, int bearer,
-            String carrier, String proxy, String port, String mmsc, String mmsProxy,
-            String mmsPort, boolean carrierEnabled) {
-        this.id = id;
-        this.numeric = numeric;
+        this.profileId = profileId;
         this.apn = apn;
-        this.types = types;
+        this.protocol = protocol;
+        this.authType = authType;
         this.user = user;
         this.password = password;
-        this.authType = authType;
-        this.protocol = protocol;
-        this.roamingProtocol = roamingProtocol;
-        this.bearer = bearer;
-
-        this.carrier = carrier;
-        this.proxy = proxy;
-        this.port = port;
-        this.mmsc = mmsc;
-        this.mmsProxy = mmsProxy;
-        this.mmsPort = mmsPort;
-        this.carrierEnabled = carrierEnabled;
+        this.type = type;
+        this.maxConnsTime = maxConnsTime;
+        this.maxConns = maxConns;
+        this.waitTime = waitTime;
+        this.enabled = enabled;
     }
 
-    /* package */ boolean isActive() {
-        return mDc != null;
+    DataProfile(ApnSetting apn, boolean isRoaming) {
+        this(apn.profileId, apn.apn, isRoaming? apn.protocol : apn.roamingProtocol,
+                apn.authType, apn.user, apn.password, apn.bearer == 0 ? TYPE_COMMON :
+                (ServiceState.isCdma(apn.bearer) ? TYPE_3GPP2 : TYPE_3GPP), apn.maxConnsTime,
+                apn.maxConns, apn.waitTime, apn.carrierEnabled);
     }
 
-    /* package */void setAsActive(DataConnection dc) {
-        mDc = dc;
-    }
+    public static Parcel toParcel(Parcel pc, DataProfile[] dps) {
 
-    /* package */void setAsInactive() {
-        mDc = null;
-    }
-
-    public String toString() {
-        StringBuilder sb = new StringBuilder();
-        sb.append("[DataProfile] ")
-        .append(", ").append(id)
-        .append(", ").append(numeric)
-        .append(", ").append(apn)
-        .append(", ").append(authType).append(", ");
-        for (int i = 0; i < types.length; i++) {
-            sb.append(types[i]);
-            if (i < types.length - 1) {
-                sb.append(" | ");
-            }
+        if(pc == null) {
+            return null;
         }
-        sb.append(", ").append(protocol);
-        sb.append(", ").append(roamingProtocol);
-        sb.append(", ").append(bearer);
-        return sb.toString();
+
+        pc.writeInt(dps.length);
+        for(int i = 0; i < dps.length; i++) {
+            pc.writeInt(dps[i].profileId);
+            pc.writeString(dps[i].apn);
+            pc.writeString(dps[i].protocol);
+            pc.writeInt(dps[i].authType);
+            pc.writeString(dps[i].user);
+            pc.writeString(dps[i].password);
+            pc.writeInt(dps[i].type);
+            pc.writeInt(dps[i].maxConnsTime);
+            pc.writeInt(dps[i].maxConns);
+            pc.writeInt(dps[i].waitTime);
+            pc.writeInt(dps[i].enabled ? 1 : 0);
+        }
+        return pc;
     }
 
-    /* some way to identify this data profile uniquely */
-    public abstract String toHash();
+    @Override
+    public String toString() {
+        return "DataProfile " + profileId + "/" + apn + "/" + protocol + "/" + authType
+                + "/" + user + "/" + password + "/" + type + "/" + maxConnsTime
+                + "/" + maxConns + "/" + waitTime + "/" + enabled;
+    }
 
-    public abstract String toShortString();
-
-    public abstract boolean canHandleType(String type);
-
-    public abstract DataProfileType getDataProfileType();
-
-    public abstract int getProfileId();
+    @Override
+    public boolean equals(Object o) {
+        if (o instanceof DataProfile == false) return false;
+        return (toString().equals(o.toString()));
+    }
 }

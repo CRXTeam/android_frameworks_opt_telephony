@@ -43,7 +43,7 @@ public interface AppInterface {
     public static final String CARD_STATUS = "card_status";
     //Intent's actions are broadcasted by Telephony once IccRefresh occurs.
     public static final String CAT_ICC_STATUS_CHANGE =
-                                    "org.codeaurora.intent.action.stk.icc_status_change";
+                                    "android.intent.action.stk.icc_status_change";
 
     /*
      * This is broadcast from the ActivityManagerService when the screen
@@ -58,6 +58,18 @@ public interface AppInterface {
      */
     public static final String CHECK_SCREEN_IDLE_ACTION =
                                     "org.codeaurora.intent.action.stk.check_screen_idle";
+
+    /*
+     * Intent action broadcasted by StkAppService when the ACTIVATE proactive command
+     * arrives.
+     */
+    public static final String CAT_ACTIVATE_NOTIFY_ACTION =
+                                    "org.codeaurora.intent.action.stk.activate_notify";
+    /*
+     * Intent action broadcasted by NfcService when the HCI Connectivity event occurs.
+     */
+    public static final String CAT_HCI_CONNECTIVITY_ACTION =
+                                    "org.codeaurora.intent.action.stk.hci_connectivity";
 
     /*
      * Callback function from app to telephony to pass a result code and user's
@@ -92,7 +104,8 @@ public interface AppInterface {
         CLOSE_CHANNEL(0x41),
         RECEIVE_DATA(0x42),
         SEND_DATA(0x43),
-        GET_CHANNEL_STATUS(0x44);
+        GET_CHANNEL_STATUS(0x44),
+        ACTIVATE(0x70);
 
         private int mValue;
 

@@ -21,6 +21,8 @@ import android.os.AsyncResult;
 import android.os.Handler;
 import android.os.Message;
 import android.telephony.Rlog;
+import android.content.Intent;
+
 
 import com.android.internal.telephony.CommandsInterface;
 import com.android.internal.telephony.gsm.SimTlv;
@@ -35,6 +37,8 @@ import java.util.Arrays;
 import static com.android.internal.telephony.uicc.IccConstants.EF_DOMAIN;
 import static com.android.internal.telephony.uicc.IccConstants.EF_IMPI;
 import static com.android.internal.telephony.uicc.IccConstants.EF_IMPU;
+import static com.android.internal.telephony.uicc.IccConstants.EF_IST;
+import static com.android.internal.telephony.uicc.IccConstants.EF_PCSCF;
 
 /**
  * {@hide}
@@ -43,14 +47,21 @@ public final class IsimUiccRecords extends IccRecords implements IsimRecords {
     protected static final String LOG_TAG = "IsimUiccRecords";
 
     private static final boolean DBG = true;
-    private static final boolean DUMP_RECORDS = false;   // Note: PII is logged when this is true
+    private static final boolean DUMP_RECORDS = true;   // Note: PII is logged when this is true
+    public static final String INTENT_ISIM_REFRESH = "com.android.intent.isim_refresh";
 
     private static final int EVENT_APP_READY = 1;
+    private static final int EVENT_AKA_AUTHENTICATE_DONE          = 90;
 
     // ISIM EF records (see 3GPP TS 31.103)
     private String mIsimImpi;               // IMS private user identity
     private String mIsimDomain;             // IMS home network domain name
     private String[] mIsimImpu;             // IMS public user identity(s)
+    private String mIsimIst;             // IMS Service Table
+    private String[] mIsimPcscf;             // IMS Proxy Call Session Control Function
+    private String auth_rsp;
+
+    private final Object mLock = new Object();
 
     private static final int TAG_ISIM_VALUE = 0x80;     // From 3GPP TS 31.103
 
@@ -59,7 +70,9 @@ public final class IsimUiccRecords extends IccRecords implements IsimRecords {
         return "IsimUiccRecords: " + super.toString()
                 + " mIsimImpi=" + mIsimImpi
                 + " mIsimDomain=" + mIsimDomain
-                + " mIsimImpu=" + mIsimImpu;
+                + " mIsimImpu=" + mIsimImpu
+                + " mIsimIst=" + mIsimIst
+                + " mIsimPcscf=" + mIsimPcscf;
     }
 
     public IsimUiccRecords(UiccCardApplication app, Context c, CommandsInterface ci) {
@@ -71,6 +84,8 @@ public final class IsimUiccRecords extends IccRecords implements IsimRecords {
 
         // recordsToLoad is set to 0 because no requests are made yet
         mRecordsToLoad = 0;
+        // Start off by setting empty state
+        resetRecords();
 
         mParentApp.registerForReady(this, EVENT_APP_READY, null);
         if (DBG) log("IsimUiccRecords X ctor this=" + this);
@@ -87,16 +102,38 @@ public final class IsimUiccRecords extends IccRecords implements IsimRecords {
 
     // ***** Overridden from Handler
     public void handleMessage(Message msg) {
+        AsyncResult ar;
+
         if (mDestroyed.get()) {
             Rlog.e(LOG_TAG, "Received message " + msg +
                     "[" + msg.what + "] while being destroyed. Ignoring.");
             return;
         }
+        loge("IsimUiccRecords: handleMessage " + msg + "[" + msg.what + "] ");
 
         try {
             switch (msg.what) {
                 case EVENT_APP_READY:
                     onReady();
+                    break;
+
+                case EVENT_AKA_AUTHENTICATE_DONE:
+                    ar = (AsyncResult)msg.obj;
+                    log("EVENT_AKA_AUTHENTICATE_DONE");
+                    if (ar.exception != null) {
+                        log("Exception ISIM AKA: " + ar.exception);
+                    } else {
+                        try {
+                            auth_rsp = (String)ar.result;
+                            log("ISIM AKA: auth_rsp = " + auth_rsp);
+                        } catch (Exception e) {
+                            log("Failed to parse ISIM AKA contents: " + e);
+                        }
+                    }
+                    synchronized (mLock) {
+                        mLock.notifyAll();
+                    }
+
                     break;
 
                 default:
@@ -123,14 +160,27 @@ public final class IsimUiccRecords extends IccRecords implements IsimRecords {
         mFh.loadEFTransparent(EF_DOMAIN, obtainMessage(
                 IccRecords.EVENT_GET_ICC_RECORD_DONE, new EfIsimDomainLoaded()));
         mRecordsToLoad++;
+        mFh.loadEFTransparent(EF_IST, obtainMessage(
+                    IccRecords.EVENT_GET_ICC_RECORD_DONE, new EfIsimIstLoaded()));
+        mRecordsToLoad++;
+        mFh.loadEFLinearFixedAll(EF_PCSCF, obtainMessage(
+                    IccRecords.EVENT_GET_ICC_RECORD_DONE, new EfIsimPcscfLoaded()));
+        mRecordsToLoad++;
 
-        log("fetchIsimRecords " + mRecordsToLoad);
+        if (DBG) log("fetchIsimRecords " + mRecordsToLoad + " requested: " + mRecordsRequested);
     }
 
     protected void resetRecords() {
         // recordsRequested is set to false indicating that the SIM
         // read requests made so far are not valid. This is set to
         // true only when fresh set of read requests are made.
+        mIsimImpi = null;
+        mIsimDomain = null;
+        mIsimImpu = null;
+        mIsimIst = null;
+        mIsimPcscf = null;
+        auth_rsp = null;
+
         mRecordsRequested = false;
     }
 
@@ -173,6 +223,33 @@ public final class IsimUiccRecords extends IccRecords implements IsimRecords {
         }
     }
 
+    private class EfIsimIstLoaded implements IccRecords.IccRecordLoaded {
+        public String getEfName() {
+            return "EF_ISIM_IST";
+        }
+        public void onRecordLoaded(AsyncResult ar) {
+            byte[] data = (byte[]) ar.result;
+            mIsimIst = IccUtils.bytesToHexString(data);
+            if (DUMP_RECORDS) log("EF_IST=" + mIsimIst);
+        }
+    }
+    private class EfIsimPcscfLoaded implements IccRecords.IccRecordLoaded {
+        public String getEfName() {
+            return "EF_ISIM_PCSCF";
+        }
+        public void onRecordLoaded(AsyncResult ar) {
+            ArrayList<byte[]> pcscflist = (ArrayList<byte[]>) ar.result;
+            if (DBG) log("EF_PCSCF record count: " + pcscflist.size());
+            mIsimPcscf = new String[pcscflist.size()];
+            int i = 0;
+            for (byte[] identity : pcscflist) {
+                String pcscf = isimTlvToString(identity);
+                if (DUMP_RECORDS) log("EF_PCSCF[" + i + "]=" + pcscf);
+                mIsimPcscf[i++] = pcscf;
+            }
+        }
+    }
+
     /**
      * ISIM records for IMS are stored inside a Tag-Length-Value record as a UTF-8 string
      * with tag value 0x80.
@@ -196,6 +273,7 @@ public final class IsimUiccRecords extends IccRecords implements IsimRecords {
         // One record loaded successfully or failed, In either case
         // we need to update the recordsToLoad count
         mRecordsToLoad -= 1;
+        if (DBG) log("onRecordLoaded " + mRecordsToLoad + " requested: " + mRecordsRequested);
 
         if (mRecordsToLoad == 0 && mRecordsRequested == true) {
             onAllRecordsLoaded();
@@ -207,8 +285,54 @@ public final class IsimUiccRecords extends IccRecords implements IsimRecords {
 
     @Override
     protected void onAllRecordsLoaded() {
+       if (DBG) log("record load complete");
         mRecordsLoadedRegistrants.notifyRegistrants(
                 new AsyncResult(null, null, null));
+    }
+
+    @Override
+    protected void handleFileUpdate(int efid) {
+        switch (efid) {
+            case EF_IMPI:
+                mFh.loadEFTransparent(EF_IMPI, obtainMessage(
+                            IccRecords.EVENT_GET_ICC_RECORD_DONE, new EfIsimImpiLoaded()));
+                mRecordsToLoad++;
+                break;
+
+            case EF_IMPU:
+                mFh.loadEFLinearFixedAll(EF_IMPU, obtainMessage(
+                            IccRecords.EVENT_GET_ICC_RECORD_DONE, new EfIsimImpuLoaded()));
+                mRecordsToLoad++;
+            break;
+
+            case EF_DOMAIN:
+                mFh.loadEFTransparent(EF_DOMAIN, obtainMessage(
+                            IccRecords.EVENT_GET_ICC_RECORD_DONE, new EfIsimDomainLoaded()));
+                mRecordsToLoad++;
+            break;
+
+            case EF_IST:
+                mFh.loadEFTransparent(EF_IST, obtainMessage(
+                            IccRecords.EVENT_GET_ICC_RECORD_DONE, new EfIsimIstLoaded()));
+                mRecordsToLoad++;
+            break;
+
+            case EF_PCSCF:
+                mFh.loadEFLinearFixedAll(EF_PCSCF, obtainMessage(
+                            IccRecords.EVENT_GET_ICC_RECORD_DONE, new EfIsimPcscfLoaded()));
+                mRecordsToLoad++;
+
+            default:
+                fetchIsimRecords();
+                break;
+        }
+    }
+
+    @Override
+    protected void broadcastRefresh() {
+        Intent intent = new Intent(INTENT_ISIM_REFRESH);
+        log("send ISim REFRESH: " + INTENT_ISIM_REFRESH);
+        mContext.sendBroadcast(intent);
     }
 
     /**
@@ -241,6 +365,52 @@ public final class IsimUiccRecords extends IccRecords implements IsimRecords {
         return (mIsimImpu != null) ? mIsimImpu.clone() : null;
     }
 
+    /**
+     * Returns the IMS Service Table (IST) that was loaded from the ISIM.
+     * @return IMS Service Table or null if not present or not loaded
+     */
+    @Override
+    public String getIsimIst() {
+        return mIsimIst;
+    }
+
+    /**
+     * Returns the IMS Proxy Call Session Control Function(PCSCF) that were loaded from the ISIM.
+     * @return an array of  PCSCF strings with one PCSCF per string, or null if
+     *      not present or not loaded
+     */
+    @Override
+    public String[] getIsimPcscf() {
+        return (mIsimPcscf != null) ? mIsimPcscf.clone() : null;
+    }
+
+    /**
+     * Returns the response of ISIM Authetification through RIL.
+     * Returns null if the Authentification hasn't been successed or isn't present iphonesubinfo.
+     * @return the response of ISIM Authetification, or null if not available
+     */
+    @Override
+    public String getIsimChallengeResponse(String nonce){
+        if (DBG) log("getIsimChallengeResponse-nonce:"+nonce);
+        try {
+            synchronized(mLock) {
+                mCi.requestIsimAuthentication(nonce,obtainMessage(EVENT_AKA_AUTHENTICATE_DONE));
+                try {
+                    mLock.wait();
+                } catch (InterruptedException e) {
+                    log("interrupted while trying to request Isim Auth");
+                }
+            }
+        } catch(Exception e) {
+            if (DBG) log( "Fail while trying to request Isim Auth");
+            return null;
+        }
+
+        if (DBG) log("getIsimChallengeResponse-auth_rsp"+auth_rsp);
+
+        return auth_rsp;
+    }
+
     @Override
     public int getDisplayRule(String plmn) {
         // Not applicable to Isim
@@ -253,13 +423,13 @@ public final class IsimUiccRecords extends IccRecords implements IsimRecords {
     }
 
     @Override
-    protected void handleFileUpdate(int efid) {
-        // We do not handle it in Isim
-    }
-
-    @Override
     public void onRefresh(boolean fileChanged, int[] fileList) {
-        // We do not handle it in Isim
+        if (fileChanged) {
+            // A future optimization would be to inspect fileList and
+            // only reload those files that we care about.  For now,
+            // just re-fetch all SIM records that we cache.
+            fetchIsimRecords();
+        }
     }
 
     @Override
@@ -291,9 +461,12 @@ public final class IsimUiccRecords extends IccRecords implements IsimRecords {
         pw.println(" mIsimImpi=" + mIsimImpi);
         pw.println(" mIsimDomain=" + mIsimDomain);
         pw.println(" mIsimImpu[]=" + Arrays.toString(mIsimImpu));
+        pw.println(" mIsimIst" + mIsimIst);
+        pw.println(" mIsimPcscf"+mIsimPcscf);
         pw.flush();
     }
 
+    @Override
     public int getVoiceMessageCount() {
         return 0; // Not applicable to Isim
     }

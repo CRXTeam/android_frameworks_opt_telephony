@@ -16,20 +16,45 @@
 
 package com.android.internal.telephony;
 
+import com.google.android.mms.MmsException;
+import com.google.android.mms.pdu.DeliveryInd;
+import com.google.android.mms.pdu.GenericPdu;
+import com.google.android.mms.pdu.NotificationInd;
+import com.google.android.mms.pdu.PduHeaders;
+import com.google.android.mms.pdu.PduParser;
+import com.google.android.mms.pdu.PduPersister;
+import com.google.android.mms.pdu.ReadOrigInd;
+
 import android.app.Activity;
 import android.app.AppOpsManager;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
+import android.database.Cursor;
+import android.database.DatabaseUtils;
+import android.database.sqlite.SQLiteException;
+import android.database.sqlite.SqliteWrapper;
+import android.net.Uri;
+import android.os.Bundle;
 import android.os.IBinder;
 import android.os.RemoteException;
+import android.os.UserHandle;
+import android.provider.Telephony;
 import android.provider.Telephony.Sms.Intents;
+import android.telephony.SmsManager;
+import android.telephony.SubscriptionManager;
 import android.telephony.Rlog;
+import android.text.TextUtils;
+import android.util.Log;
 
 import com.android.internal.telephony.uicc.IccUtils;
-import com.android.internal.telephony.MSimConstants;
+
+import static com.google.android.mms.pdu.PduHeaders.MESSAGE_TYPE_DELIVERY_IND;
+import static com.google.android.mms.pdu.PduHeaders.MESSAGE_TYPE_NOTIFICATION_IND;
+import static com.google.android.mms.pdu.PduHeaders.MESSAGE_TYPE_READ_ORIG_IND;
 
 /**
  * WAP push handler class.
@@ -83,11 +108,13 @@ public class WapPushOverSms implements ServiceConnection {
      * wap-230-wsp-20010705-a section 8 for details on the WAP PDU format.
      *
      * @param pdu The WAP PDU, made up of one or more SMS PDUs
+     * @param address The originating address
      * @return a result code from {@link android.provider.Telephony.Sms.Intents}, or
      *         {@link Activity#RESULT_OK} if the message has been broadcast
      *         to applications
      */
-    public int dispatchWapPdu(byte[] pdu, BroadcastReceiver receiver, InboundSmsHandler handler) {
+    public int dispatchWapPdu(byte[] pdu, BroadcastReceiver receiver, InboundSmsHandler handler,
+            String address) {
 
         if (DBG) Rlog.d(TAG, "Rx: " + IccUtils.bytesToHexString(pdu));
 
@@ -95,6 +122,9 @@ public class WapPushOverSms implements ServiceConnection {
             int index = 0;
             int transactionId = pdu[index++] & 0xFF;
             int pduType = pdu[index++] & 0xFF;
+
+            // Should we "abort" if no subId for now just no supplying extra param below
+            int phoneId = handler.getPhone().getPhoneId();
 
             if ((pduType != WspTypeDecoder.PDU_TYPE_PUSH) &&
                     (pduType != WspTypeDecoder.PDU_TYPE_CONFIRMED_PUSH)) {
@@ -170,6 +200,16 @@ public class WapPushOverSms implements ServiceConnection {
                 System.arraycopy(pdu, dataIndex, intentData, 0, intentData.length);
             }
 
+            if (SmsManager.getDefault().getAutoPersisting()) {
+                // Store the wap push data in telephony
+                long [] subIds = SubscriptionManager.getSubId(phoneId);
+                // FIXME (tomtaylor) - when we've updated SubscriptionManager, change
+                // SubscriptionManager.DEFAULT_SUB_ID to SubscriptionManager.getDefaultSmsSubId()
+                long subId = (subIds != null) && (subIds.length > 0) ? subIds[0] :
+                    SmsManager.getDefaultSmsSubId();
+                writeInboxMessage(subId, intentData);
+            }
+
             /**
              * Seek for application ID field in WSP header.
              * If application ID is found, WapPushManager substitute the message
@@ -202,8 +242,10 @@ public class WapPushOverSms implements ServiceConnection {
                         intent.putExtra("data", intentData);
                         intent.putExtra("contentTypeParameters",
                                 pduDecoder.getContentParameters());
-                        intent.putExtra(MSimConstants.SUBSCRIPTION_KEY,
-                            handler.getPhone().getSubscription());
+                        if (!TextUtils.isEmpty(address)) {
+                            intent.putExtra("address", address);
+                        }
+                        SubscriptionManager.putPhoneIdAndSubIdExtra(intent, phoneId);
 
                         int procRet = wapPushMan.processMessage(wapAppId, contentType, intent);
                         if (DBG) Rlog.v(TAG, "procRet:" + procRet);
@@ -244,7 +286,10 @@ public class WapPushOverSms implements ServiceConnection {
             intent.putExtra("header", header);
             intent.putExtra("data", intentData);
             intent.putExtra("contentTypeParameters", pduDecoder.getContentParameters());
-            intent.putExtra(MSimConstants.SUBSCRIPTION_KEY, handler.getPhone().getSubscription());
+            if (!TextUtils.isEmpty(address)) {
+                intent.putExtra("address", address);
+            }
+            SubscriptionManager.putPhoneIdAndSubIdExtra(intent, phoneId);
 
             // Direct the intent to only the default MMS app. If we can't find a default MMS app
             // then sent it to all broadcast receivers.
@@ -256,7 +301,7 @@ public class WapPushOverSms implements ServiceConnection {
                         " " + componentName.getClassName());
             }
 
-            handler.dispatchIntent(intent, permission, appOp, receiver);
+            handler.dispatchIntent(intent, permission, appOp, receiver, UserHandle.OWNER);
             return Activity.RESULT_OK;
         } catch (ArrayIndexOutOfBoundsException aie) {
             // 0-byte WAP PDU or other unexpected WAP PDU contents can easily throw this;
@@ -264,5 +309,169 @@ public class WapPushOverSms implements ServiceConnection {
             Rlog.e(TAG, "ignoring dispatchWapPdu() array index exception: " + aie);
             return Intents.RESULT_SMS_GENERIC_ERROR;
         }
+    }
+
+    private void writeInboxMessage(long subId, byte[] pushData) {
+        final GenericPdu pdu = new PduParser(pushData).parse();
+        if (pdu == null) {
+            Rlog.e(TAG, "Invalid PUSH PDU");
+        }
+        final PduPersister persister = PduPersister.getPduPersister(mContext);
+        final int type = pdu.getMessageType();
+        try {
+            switch (type) {
+                case MESSAGE_TYPE_DELIVERY_IND:
+                case MESSAGE_TYPE_READ_ORIG_IND: {
+                    final long threadId = getDeliveryOrReadReportThreadId(mContext, pdu);
+                    if (threadId == -1) {
+                        // The associated SendReq isn't found, therefore skip
+                        // processing this PDU.
+                        Rlog.e(TAG, "Failed to find delivery or read report's thread id");
+                        break;
+                    }
+                    final Uri uri = persister.persist(
+                            pdu,
+                            Telephony.Mms.Inbox.CONTENT_URI,
+                            true/*createThreadId*/,
+                            true/*groupMmsEnabled*/,
+                            null/*preOpenedFiles*/);
+                    if (uri == null) {
+                        Rlog.e(TAG, "Failed to persist delivery or read report");
+                        break;
+                    }
+                    // Update thread ID for ReadOrigInd & DeliveryInd.
+                    final ContentValues values = new ContentValues(1);
+                    values.put(Telephony.Mms.THREAD_ID, threadId);
+                    if (SqliteWrapper.update(
+                            mContext,
+                            mContext.getContentResolver(),
+                            uri,
+                            values,
+                            null/*where*/,
+                            null/*selectionArgs*/) != 1) {
+                        Rlog.e(TAG, "Failed to update delivery or read report thread id");
+                    }
+                    break;
+                }
+                case MESSAGE_TYPE_NOTIFICATION_IND: {
+                    final NotificationInd nInd = (NotificationInd) pdu;
+
+                    Bundle configs = SmsManager.getSmsManagerForSubscriber(subId)
+                            .getCarrierConfigValues();
+                    if (configs != null && configs.getBoolean(
+                        SmsManager.MMS_CONFIG_APPEND_TRANSACTION_ID, false)) {
+                        final byte [] contentLocation = nInd.getContentLocation();
+                        if ('=' == contentLocation[contentLocation.length - 1]) {
+                            byte [] transactionId = nInd.getTransactionId();
+                            byte [] contentLocationWithId = new byte [contentLocation.length
+                                    + transactionId.length];
+                            System.arraycopy(contentLocation, 0, contentLocationWithId,
+                                    0, contentLocation.length);
+                            System.arraycopy(transactionId, 0, contentLocationWithId,
+                                    contentLocation.length, transactionId.length);
+                            nInd.setContentLocation(contentLocationWithId);
+                        }
+                    }
+                    if (!isDuplicateNotification(mContext, nInd)) {
+                        final Uri uri = persister.persist(
+                                pdu,
+                                Telephony.Mms.Inbox.CONTENT_URI,
+                                true/*createThreadId*/,
+                                true/*groupMmsEnabled*/,
+                                null/*preOpenedFiles*/);
+                        if (uri == null) {
+                            Rlog.e(TAG, "Failed to save MMS WAP push notification ind");
+                        }
+                    } else {
+                        Rlog.d(TAG, "Skip storing duplicate MMS WAP push notification ind: "
+                                + new String(nInd.getContentLocation()));
+                    }
+                    break;
+                }
+                default:
+                    Log.e(TAG, "Received unrecognized WAP Push PDU.");
+            }
+        } catch (MmsException e) {
+            Log.e(TAG, "Failed to save MMS WAP push data: type=" + type, e);
+        } catch (RuntimeException e) {
+            Log.e(TAG, "Unexpected RuntimeException in persisting MMS WAP push data", e);
+        }
+
+    }
+
+    private static final String THREAD_ID_SELECTION =
+            Telephony.Mms.MESSAGE_ID + "=? AND " + Telephony.Mms.MESSAGE_TYPE + "=?";
+
+    private static long getDeliveryOrReadReportThreadId(Context context, GenericPdu pdu) {
+        String messageId;
+        if (pdu instanceof DeliveryInd) {
+            messageId = new String(((DeliveryInd) pdu).getMessageId());
+        } else if (pdu instanceof ReadOrigInd) {
+            messageId = new String(((ReadOrigInd) pdu).getMessageId());
+        } else {
+            Rlog.e(TAG, "WAP Push data is neither delivery or read report type: "
+                    + pdu.getClass().getCanonicalName());
+            return -1L;
+        }
+        Cursor cursor = null;
+        try {
+            cursor = SqliteWrapper.query(
+                    context,
+                    context.getContentResolver(),
+                    Telephony.Mms.CONTENT_URI,
+                    new String[]{ Telephony.Mms.THREAD_ID },
+                    THREAD_ID_SELECTION,
+                    new String[]{
+                            DatabaseUtils.sqlEscapeString(messageId),
+                            Integer.toString(PduHeaders.MESSAGE_TYPE_SEND_REQ)
+                    },
+                    null/*sortOrder*/);
+            if (cursor != null && cursor.moveToFirst()) {
+                return cursor.getLong(0);
+            }
+        } catch (SQLiteException e) {
+            Rlog.e(TAG, "Failed to query delivery or read report thread id", e);
+        } finally {
+            if (cursor != null) {
+                cursor.close();
+            }
+        }
+        return -1L;
+    }
+
+    private static final String LOCATION_SELECTION =
+            Telephony.Mms.MESSAGE_TYPE + "=? AND " + Telephony.Mms.CONTENT_LOCATION + " =?";
+
+    private static boolean isDuplicateNotification(Context context, NotificationInd nInd) {
+        final byte[] rawLocation = nInd.getContentLocation();
+        if (rawLocation != null) {
+            String location = new String(rawLocation);
+            String[] selectionArgs = new String[] { location };
+            Cursor cursor = null;
+            try {
+                cursor = SqliteWrapper.query(
+                        context,
+                        context.getContentResolver(),
+                        Telephony.Mms.CONTENT_URI,
+                        new String[]{Telephony.Mms._ID},
+                        LOCATION_SELECTION,
+                        new String[]{
+                                Integer.toString(PduHeaders.MESSAGE_TYPE_NOTIFICATION_IND),
+                                new String(rawLocation)
+                        },
+                        null/*sortOrder*/);
+                if (cursor != null && cursor.getCount() > 0) {
+                    // We already received the same notification before.
+                    return true;
+                }
+            } catch (SQLiteException e) {
+                Rlog.e(TAG, "failed to query existing notification ind", e);
+            } finally {
+                if (cursor != null) {
+                    cursor.close();
+                }
+            }
+        }
+        return false;
     }
 }

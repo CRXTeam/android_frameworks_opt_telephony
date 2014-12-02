@@ -16,84 +16,94 @@
 
 package com.android.internal.telephony;
 
+import android.os.SystemClock;
 import android.telephony.Rlog;
 import android.util.Log;
-import com.android.internal.telephony.CallStateException;
+
+import java.lang.Override;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.CopyOnWriteArraySet;
 
 /**
  * {@hide}
  */
 public abstract class Connection {
+    public interface PostDialListener {
+        void onPostDialWait();
+    }
+
+    /**
+     * Listener interface for events related to the connection which should be reported to the
+     * {@link android.telecom.Connection}.
+     */
+    public interface Listener {
+        public void onVideoStateChanged(int videoState);
+        public void onLocalVideoCapabilityChanged(boolean capable);
+        public void onRemoteVideoCapabilityChanged(boolean capable);
+        public void onVideoProviderChanged(
+                android.telecom.Connection.VideoProvider videoProvider);
+        public void onAudioQualityChanged(int audioQuality);
+    }
+
+    /**
+     * Base listener implementation.
+     */
+    public abstract static class ListenerBase implements Listener {
+        @Override
+        public void onVideoStateChanged(int videoState) {}
+        @Override
+        public void onLocalVideoCapabilityChanged(boolean capable) {}
+        @Override
+        public void onRemoteVideoCapabilityChanged(boolean capable) {}
+        @Override
+        public void onVideoProviderChanged(
+                android.telecom.Connection.VideoProvider videoProvider) {}
+        @Override
+        public void onAudioQualityChanged(int audioQuality) {}
+    }
+
+    public static final int AUDIO_QUALITY_STANDARD = 1;
+    public static final int AUDIO_QUALITY_HIGH_DEFINITION = 2;
 
     //Caller Name Display
     protected String mCnapName;
     protected int mCnapNamePresentation  = PhoneConstants.PRESENTATION_ALLOWED;
-
-    public CallDetails callDetails = new CallDetails();
-    public CallModify callModifyRequest = null;
-    public String errorInfo;
-
-    private static String LOG_TAG = "Connection";
-
-    public enum DisconnectCause {
-        NOT_DISCONNECTED,               /* has not yet disconnected */
-        INCOMING_MISSED,                /* an incoming call that was missed and never answered */
-        NORMAL,                         /* normal; remote */
-        LOCAL,                          /* normal; local hangup */
-        BUSY,                           /* outgoing call to busy line */
-        CONGESTION,                     /* outgoing call to congested network */
-        MMI,                            /* not presently used; dial() returns null */
-        INVALID_NUMBER,                 /* invalid dial string */
-        NUMBER_UNREACHABLE,             /* cannot reach the peer */
-        SERVER_UNREACHABLE,             /* cannot reach the server */
-        INVALID_CREDENTIALS,            /* invalid credentials */
-        OUT_OF_NETWORK,                 /* calling from out of network is not allowed */
-        SERVER_ERROR,                   /* server error */
-        TIMED_OUT,                      /* client timed out */
-        LOST_SIGNAL,
-        LIMIT_EXCEEDED,                 /* eg GSM ACM limit exceeded */
-        INCOMING_REJECTED,              /* an incoming call that was rejected */
-        POWER_OFF,                      /* radio is turned off explicitly */
-        OUT_OF_SERVICE,                 /* out of service */
-        ICC_ERROR,                      /* No ICC, ICC locked, or other ICC error */
-        CALL_BARRED,                    /* call was blocked by call barring */
-        FDN_BLOCKED,                    /* call was blocked by fixed dial number */
-        CS_RESTRICTED,                  /* call was blocked by restricted all voice access */
-        CS_RESTRICTED_NORMAL,           /* call was blocked by restricted normal voice access */
-        CS_RESTRICTED_EMERGENCY,        /* call was blocked by restricted emergency voice access */
-        UNOBTAINABLE_NUMBER,            /* Unassigned number (3GPP TS 24.008 table 10.5.123) */
-        DIAL_MODIFIED_TO_USSD,          /* Stk Call Control modified DIAL request to USSD request */
-        DIAL_MODIFIED_TO_SS,            /* Stk Call Control modified DIAL request to SS request */
-        DIAL_MODIFIED_TO_DIAL,          /* Stk Call Control modified DIAL request to DIAL with modified data */
-        CDMA_LOCKED_UNTIL_POWER_CYCLE,  /* MS is locked until next power cycle */
-        CDMA_DROP,
-        CDMA_INTERCEPT,                 /* INTERCEPT order received, MS state idle entered */
-        CDMA_REORDER,                   /* MS has been redirected, call is cancelled */
-        CDMA_SO_REJECT,                 /* service option rejection */
-        CDMA_RETRY_ORDER,               /* requested service is rejected, retry delay is set */
-        CDMA_ACCESS_FAILURE,
-        CDMA_PREEMPTED,
-        CDMA_NOT_EMERGENCY,              /* not an emergency call */
-        CDMA_ACCESS_BLOCKED,            /* Access Blocked by CDMA network */
-        EMERGENCY_TEMP_FAILURE,         /* EMERGENCY call failed with temporary fail cause */
-        EMERGENCY_PERM_FAILURE,         /* EMERGENCY call failed with permanent fail cause */
-        ERROR_UNSPECIFIED,
-        /* Ims Disconnect cause grouped from here */
-        SRVCC_CALL_DROP,                /* Call dropped because of SRVCC*/
-        ANSWERED_ELSEWHERE,             /* MT call has ended due to a release from the network
-                                         * because the call was answered elsewhere */
-
-        CALL_FAIL_MISC
-    }
-
-    Object mUserData;
-
+    protected String mAddress;     // MAY BE NULL!!!
+    protected String mDialString;          // outgoing calls only
+    protected int mNumberPresentation = PhoneConstants.PRESENTATION_ALLOWED;
+    protected boolean mIsIncoming;
     /*
-     * This time/timespan values are based on SystemClock.elapsedRealTime(),
+     * These time/timespan values are based on System.currentTimeMillis(),
+     * i.e., "wall clock" time.
+     */
+    protected long mCreateTime;
+    protected long mConnectTime;
+    /*
+     * These time/timespan values are based on SystemClock.elapsedRealTime(),
      * i.e., time since boot.  They are appropriate for comparison and
      * calculating deltas.
      */
-    public long mConnectTimeReal;
+    protected long mConnectTimeReal;
+    protected long mDuration;
+    protected long mHoldingStartTime;  // The time when the Connection last transitioned
+                            // into HOLDING
+    protected Connection mOrigConnection;
+    private List<PostDialListener> mPostDialListeners = new ArrayList<>();
+    public Set<Listener> mListeners = new CopyOnWriteArraySet<>();
+
+    protected boolean mNumberConverted = false;
+    protected String mConvertedNumber;
+
+    private static String LOG_TAG = "Connection";
+
+    Object mUserData;
+    private int mVideoState;
+    private boolean mLocalVideoCapable;
+    private boolean mRemoteVideoCapable;
+    private int mAudioQuality;
+    private android.telecom.Connection.VideoProvider mVideoProvider;
 
     /* Instance Methods */
 
@@ -104,7 +114,9 @@ public abstract class Connection {
      * @return address or null if unavailable
      */
 
-    public abstract String getAddress();
+    public String getAddress() {
+        return mAddress;
+    }
 
     /**
      * Gets CNAP name associated with connection.
@@ -128,31 +140,7 @@ public abstract class Connection {
      */
 
     public int getCnapNamePresentation() {
-        return mCnapNamePresentation;
-    }
-
-    public CallDetails getCallDetails() {
-        return callDetails;
-    }
-
-    public CallModify getCallModify() {
-        return callModifyRequest;
-    }
-
-    public String getErrorInfo() {
-        return errorInfo;
-    }
-
-    public void setConnectionDetails(CallDetails ConnDetails) {
-        callDetails = ConnDetails;
-    }
-
-    public void setModifyConnectionDetails(CallModify modifyConn) {
-        callModifyRequest = modifyConn;
-    }
-
-    public void setErrorInfo(String errorInfo) {
-        errorInfo = errorInfo;
+       return mCnapNamePresentation;
     }
 
     /**
@@ -166,16 +154,8 @@ public abstract class Connection {
      * Effectively, when an incoming call starts ringing or an
      * outgoing call starts dialing
      */
-    public abstract long getCreateTime();
-
-    /**
-     * Set Connection create time in currentTimeMillis() format.
-     * This API may be used to change create time of the
-     * Connection for scenarios like IMS Volte SRVCC where
-     * create time is transferred from PS Connection to CS.
-     */
-    public void setCreateTime(long timeInMillis) {
-        Rlog.e(LOG_TAG, "setCreateTime() not implemented");
+    public long getCreateTime() {
+        return mCreateTime;
     }
 
     /**
@@ -184,16 +164,18 @@ public abstract class Connection {
      * For incoming calls: Begins at (INCOMING|WAITING) -> ACTIVE transition.
      * Returns 0 before then.
      */
-    public abstract long getConnectTime();
+    public long getConnectTime() {
+        return mConnectTime;
+    }
 
     /**
-     * Set connection connect time in currentTimeMillis() format.
-     * This API may be used to change connect time of the
-     * Connection for scenarios like IMS Volte SRVCC where
-     * connect time is transferred from PS Connection to CS.
+     * Connection connect time in elapsedRealtime() format.
+     * For outgoing calls: Begins at (DIALING|ALERTING) -> ACTIVE transition.
+     * For incoming calls: Begins at (INCOMING|WAITING) -> ACTIVE transition.
+     * Returns 0 before then.
      */
-    public void setConnectTime(long timeInMillis) {
-        Rlog.e(LOG_TAG, "setConnectTime() not implemented");
+    public long getConnectTimeReal() {
+        return mConnectTimeReal;
     }
 
     /**
@@ -209,7 +191,24 @@ public abstract class Connection {
      * If the call is still connected, then returns the elapsed
      * time since connect.
      */
-    public abstract long getDurationMillis();
+    public long getDurationMillis() {
+        if (mConnectTimeReal == 0) {
+            return 0;
+        } else if (mDuration == 0) {
+            return SystemClock.elapsedRealtime() - mConnectTimeReal;
+        } else {
+            return mDuration;
+        }
+    }
+
+    /**
+     * The time when this Connection last transitioned into HOLDING
+     * in elapsedRealtime() format.
+     * Returns 0, if it has never made a transition into HOLDING.
+     */
+    public long getHoldingStartTime() {
+        return mHoldingStartTime;
+    }
 
     /**
      * If this connection is HOLDING, return the number of milliseconds
@@ -220,16 +219,20 @@ public abstract class Connection {
     public abstract long getHoldDurationMillis();
 
     /**
-     * Returns "NOT_DISCONNECTED" if not yet disconnected.
+     * Returns call disconnect cause. Values are defined in
+     * {@link android.telephony.DisconnectCause}. If the call is not yet
+     * disconnected, NOT_DISCONNECTED is returned.
      */
-    public abstract DisconnectCause getDisconnectCause();
+    public abstract int getDisconnectCause();
 
     /**
      * Returns true of this connection originated elsewhere
      * ("MT" or mobile terminated; another party called this terminal)
      * or false if this call originated here (MO or mobile originated).
      */
-    public abstract boolean isIncoming();
+    public boolean isIncoming() {
+        return mIsIncoming;
+    }
 
     /**
      * If this Connection is connected, then it is associated with
@@ -317,6 +320,24 @@ public abstract class Connection {
         mUserData = null;
     }
 
+    public final void addPostDialListener(PostDialListener listener) {
+        if (!mPostDialListeners.contains(listener)) {
+            mPostDialListeners.add(listener);
+        }
+    }
+
+    protected final void clearPostDialListeners() {
+        mPostDialListeners.clear();
+    }
+
+    protected final void notifyPostDialListeners() {
+        if (getPostDialState() == PostDialState.WAIT) {
+            for (PostDialListener listener : new ArrayList<>(mPostDialListeners)) {
+                listener.onPostDialWait();
+            }
+        }
+    }
+
     public abstract PostDialState getPostDialState();
 
     /**
@@ -354,13 +375,171 @@ public abstract class Connection {
     public abstract UUSInfo getUUSInfo();
 
     /**
-     * Gets connection index associated with connection.
-     * @return index or exception if unavailable or phone
-     * does not support this API
+     * Returns the CallFail reason provided by the RIL with the result of
+     * RIL_REQUEST_LAST_CALL_FAIL_CAUSE
      */
+    public abstract int getPreciseDisconnectCause();
 
-    public int getIndex() throws CallStateException {
-        throw new CallStateException("Connection index not assigned");
+    /**
+     * Returns the original Connection instance associated with
+     * this Connection
+     */
+    public Connection getOrigConnection() {
+        return mOrigConnection;
+    }
+
+    /**
+     * Returns whether the original ImsPhoneConnection was a member
+     * of a conference call
+     * @return valid only when getOrigConnection() is not null
+     */
+    public abstract boolean isMultiparty();
+
+    public void migrateFrom(Connection c) {
+        if (c == null) return;
+        mListeners = c.mListeners;
+        mAddress = c.getAddress();
+        mNumberPresentation = c.getNumberPresentation();
+        mDialString = c.getOrigDialString();
+        mCnapName = c.getCnapName();
+        mCnapNamePresentation = c.getCnapNamePresentation();
+        mIsIncoming = c.isIncoming();
+        mCreateTime = c.getCreateTime();
+        mConnectTime = c.getConnectTime();
+        mConnectTimeReal = c.getConnectTimeReal();
+        mHoldingStartTime = c.getHoldingStartTime();
+        mOrigConnection = c.getOrigConnection();
+    }
+
+    /**
+     * Assign a listener to be notified of state changes.
+     *
+     * @param listener A listener.
+     */
+    public final void addListener(Listener listener) {
+        mListeners.add(listener);
+    }
+
+    /**
+     * Removes a listener.
+     *
+     * @param listener A listener.
+     */
+    public final void removeListener(Listener listener) {
+        mListeners.remove(listener);
+    }
+
+    /**
+     * Returns the current video state of the connection.
+     *
+     * @return The video state of the connection.
+     */
+    public int getVideoState() {
+        return mVideoState;
+    }
+
+    /**
+     * Returns the local video capability state for the connection.
+     *
+     * @return {@code True} if the connection has local video capabilities.
+     */
+    public boolean isLocalVideoCapable() {
+        return mLocalVideoCapable;
+    }
+
+    /**
+     * Returns the remote video capability state for the connection.
+     *
+     * @return {@code True} if the connection has remote video capabilities.
+     */
+    public boolean isRemoteVideoCapable() {
+        return mRemoteVideoCapable;
+    }
+
+    /**
+     * Returns the {@link android.telecom.Connection.VideoProvider} for the connection.
+     *
+     * @return The {@link android.telecom.Connection.VideoProvider}.
+     */
+    public android.telecom.Connection.VideoProvider getVideoProvider() {
+        return mVideoProvider;
+    }
+
+    /**
+     * Returns the audio-quality for the connection.
+     *
+     * @return The audio quality for the connection.
+     */
+    public int getAudioQuality() {
+        return mAudioQuality;
+    }
+
+    /**
+     * Sets the videoState for the current connection and reports the changes to all listeners.
+     * Valid video states are defined in {@link android.telecom.VideoProfile}.
+     *
+     * @return The video state.
+     */
+    public void setVideoState(int videoState) {
+        mVideoState = videoState;
+        for (Listener l : mListeners) {
+            l.onVideoStateChanged(mVideoState);
+        }
+    }
+
+    /**
+     * Sets whether video capability is present locally.
+     *
+     * @param capable {@code True} if video capable.
+     */
+    public void setLocalVideoCapable(boolean capable) {
+        mLocalVideoCapable = capable;
+        for (Listener l : mListeners) {
+            l.onLocalVideoCapabilityChanged(mLocalVideoCapable);
+        }
+    }
+
+    /**
+     * Sets whether video capability is present remotely.
+     *
+     * @param capable {@code True} if video capable.
+     */
+    public void setRemoteVideoCapable(boolean capable) {
+        mRemoteVideoCapable = capable;
+        for (Listener l : mListeners) {
+            l.onRemoteVideoCapabilityChanged(mRemoteVideoCapable);
+        }
+    }
+
+    /**
+     * Set the audio quality for the connection.
+     *
+     * @param audioQuality The audio quality.
+     */
+    public void setAudioQuality(int audioQuality) {
+        mAudioQuality = audioQuality;
+        for (Listener l : mListeners) {
+            l.onAudioQualityChanged(mAudioQuality);
+        }
+    }
+
+    /**
+     * Sets the {@link android.telecom.Connection.VideoProvider} for the connection.
+     *
+     * @param videoProvider The video call provider.
+     */
+    public void setVideoProvider(android.telecom.Connection.VideoProvider videoProvider) {
+        mVideoProvider = videoProvider;
+        for (Listener l : mListeners) {
+            l.onVideoProviderChanged(mVideoProvider);
+        }
+    }
+
+    public void setConverted(String oriNumber) {
+        mNumberConverted = true;
+        mConvertedNumber = mAddress;
+        mAddress = oriNumber;
+        mDialString = oriNumber;
     }
 
     /**

@@ -16,7 +16,9 @@
 
 package com.android.internal.telephony;
 
+import android.app.PendingIntent;
 import android.content.Context;
+import android.content.IntentFilter;
 import android.os.AsyncResult;
 import android.os.Handler;
 import android.os.Message;
@@ -26,6 +28,7 @@ import android.os.SystemClock;
 import android.telephony.CellInfo;
 import android.telephony.ServiceState;
 import android.telephony.SignalStrength;
+import android.telephony.TelephonyManager;
 import android.text.TextUtils;
 import android.util.Pair;
 import android.util.TimeUtils;
@@ -103,7 +106,6 @@ public abstract class ServiceStateTracker extends Handler {
     protected RegistrantList mRoamingOffRegistrants = new RegistrantList();
     protected RegistrantList mAttachedRegistrants = new RegistrantList();
     protected RegistrantList mDetachedRegistrants = new RegistrantList();
-    protected RegistrantList mIwlanRegistrants = new RegistrantList();
     protected RegistrantList mDataRegStateOrRatChangedRegistrants = new RegistrantList();
     protected RegistrantList mNetworkAttachedRegistrants = new RegistrantList();
     protected RegistrantList mPsRestrictEnabledRegistrants = new RegistrantList();
@@ -112,6 +114,9 @@ public abstract class ServiceStateTracker extends Handler {
     /* Radio power off pending flag and tag counter */
     protected boolean mPendingRadioPowerOffAfterDataOff = false;
     protected int mPendingRadioPowerOffAfterDataOffTag = 0;
+
+    /* Current rat is iwlan */
+    protected boolean mIwlanRatAvailable = false;
 
     /** Signal strength poll rate. */
     protected static final int POLL_PERIOD_MILLIS = 20 * 1000;
@@ -163,6 +168,7 @@ public abstract class ServiceStateTracker extends Handler {
     public static final int EVENT_ICC_CHANGED                          = 42;
     protected static final int EVENT_GET_CELL_INFO_LIST                = 43;
     protected static final int EVENT_UNSOL_CELL_INFO_LIST              = 44;
+    protected static final int EVENT_CHANGE_IMS_STATE                  = 45;
 
     protected static final String TIMEZONE_PROPERTY = "persist.sys.timezone";
 
@@ -195,8 +201,6 @@ public abstract class ServiceStateTracker extends Handler {
         "tg", // Togo
     };
 
-    private ArrayList<CellInfoResult> mCellInfoWaitList;
-
     private class CellInfoResult {
         List<CellInfo> list;
         Object lockObj = new Object();
@@ -206,11 +210,19 @@ public abstract class ServiceStateTracker extends Handler {
     protected static final String REGISTRATION_DENIED_GEN  = "General";
     protected static final String REGISTRATION_DENIED_AUTH = "Authentication Failure";
 
+    protected boolean mImsRegistrationOnOff = false;
+    protected boolean mAlarmSwitch = false;
+    protected IntentFilter mIntentFilter = null;
+    protected PendingIntent mRadioOffIntent = null;
+    protected static final String ACTION_RADIO_OFF = "android.intent.action.ACTION_RADIO_OFF";
+    protected boolean mPowerOffDelayNeed = true;
+    protected boolean mDeviceShuttingDown = false;
+
+
     protected ServiceStateTracker(PhoneBase phoneBase, CommandsInterface ci, CellInfo cellInfo) {
         mPhoneBase = phoneBase;
         mCellInfo = cellInfo;
         mCi = ci;
-        mCellInfoWaitList = new ArrayList<CellInfoResult>();
         mVoiceCapable = mPhoneBase.getContext().getResources().getBoolean(
                 com.android.internal.R.bool.config_voice_capable);
         mUiccController = UiccController.getInstance();
@@ -222,17 +234,17 @@ public abstract class ServiceStateTracker extends Handler {
             ServiceState.rilRadioTechnologyToString(ServiceState.RIL_RADIO_TECHNOLOGY_UNKNOWN));
     }
 
+    void requestShutdown() {
+        if (mDeviceShuttingDown == true) return;
+        mDeviceShuttingDown = true;
+        mDesiredPowerState = false;
+        setPowerStateToDesired();
+    }
+
     public void dispose() {
         mCi.unSetOnSignalStrengthUpdate(this);
         mUiccController.unregisterForIccChanged(this);
         mCi.unregisterForCellInfoList(this);
-        for (CellInfoResult result : mCellInfoWaitList) {
-            synchronized(result.lockObj) {
-                result.list = null;
-                result.lockObj.notify();
-            }
-        }
-        mCellInfoWaitList.clear();
     }
 
     public boolean getDesiredPowerState() {
@@ -286,7 +298,10 @@ public abstract class ServiceStateTracker extends Handler {
     }
 
     protected void updatePhoneObject() {
-        mPhoneBase.updatePhoneObject(mSS.getRilVoiceRadioTechnology());
+        if (mPhoneBase.getContext().getResources().
+                getBoolean(com.android.internal.R.bool.config_switch_phone_on_voice_reg_state_change)) {
+            mPhoneBase.updatePhoneObject(mSS.getRilVoiceRadioTechnology());
+        }
     }
 
     /**
@@ -431,7 +446,6 @@ public abstract class ServiceStateTracker extends Handler {
                     mLastCellInfoListTime = SystemClock.elapsedRealtime();
                     mLastCellInfoList = result.list;
                     result.lockObj.notify();
-                    mCellInfoWaitList.remove(result);
                 }
                 break;
             }
@@ -470,6 +484,9 @@ public abstract class ServiceStateTracker extends Handler {
     public abstract int getCurrentDataConnectionState();
     public abstract boolean isConcurrentVoiceAndDataAllowed();
 
+    public abstract void setImsRegistrationState(boolean registered);
+    public abstract void pollState();
+
     /**
      * Registration point for transition into DataConnection attached.
      * @param h handler to notify
@@ -504,21 +521,6 @@ public abstract class ServiceStateTracker extends Handler {
     }
     public void unregisterForDataConnectionDetached(Handler h) {
         mDetachedRegistrants.remove(h);
-    }
-
-    /**
-     * Registration IWLAN RAT availability.
-     * @param h handler to notify
-     * @param what what code of message when delivered
-     * @param obj placed in Message.obj
-     */
-    public void registerForIwlanAvailable(Handler h, int what, Object obj) {
-        Registrant r = new Registrant(h, what, obj);
-        mIwlanRegistrants.add(r);
-    }
-
-    public void unregisterForIwlanAvailable(Handler h) {
-        mIwlanRegistrants.remove(h);
     }
 
     /**
@@ -603,6 +605,24 @@ public abstract class ServiceStateTracker extends Handler {
     public void powerOffRadioSafely(DcTrackerBase dcTracker) {
         synchronized (this) {
             if (!mPendingRadioPowerOffAfterDataOff) {
+                // In some network, deactivate PDP connection cause releasing of RRC connection,
+                // which MM/IMSI detaching request needs. Without this detaching, network can
+                // not release the network resources previously attached.
+                // So we are avoiding data detaching on these networks.
+                String[] networkNotClearData = mPhoneBase.getContext().getResources()
+                        .getStringArray(com.android.internal.R.array.networks_not_clear_data);
+                String currentNetwork = mSS.getOperatorNumeric();
+                if ((networkNotClearData != null) && (currentNetwork != null)) {
+                    for (int i = 0; i < networkNotClearData.length; i++) {
+                        if (currentNetwork.equals(networkNotClearData[i])) {
+                            // Don't clear data connection for this carrier
+                            if (DBG)
+                                log("Not disconnecting data for " + currentNetwork);
+                            hangupAndPowerOff();
+                            return;
+                        }
+                    }
+                }
                 // To minimize race conditions we call cleanUpAllConnections on
                 // both if else paths instead of before this isDisconnected test.
                 if (dcTracker.isDisconnected()) {
@@ -737,6 +757,10 @@ public abstract class ServiceStateTracker extends Handler {
         return retVal;
     }
 
+    public String getSystemProperty(String property, String defValue) {
+        return TelephonyManager.getTelephonyProperty(property, mPhoneBase.getSubId(), defValue);
+    }
+
     /**
      * @return all available cell information or null if none.
      */
@@ -750,14 +774,12 @@ public abstract class ServiceStateTracker extends Handler {
                         > LAST_CELL_INFO_LIST_MAX_AGE_MS) {
                     Message msg = obtainMessage(EVENT_GET_CELL_INFO_LIST, result);
                     synchronized(result.lockObj) {
+                        result.list = null;
                         mCi.getCellInfoList(msg);
                         try {
-                            mCellInfoWaitList.add(result);
-                            result.lockObj.wait();
+                            result.lockObj.wait(5000);
                         } catch (InterruptedException e) {
                             e.printStackTrace();
-                            result.list = null;
-                            mCellInfoWaitList.remove(result);
                         }
                     }
                 } else {
@@ -772,15 +794,16 @@ public abstract class ServiceStateTracker extends Handler {
             if (DBG) log("SST.getAllCellInfo(): not implemented");
             result.list = null;
         }
-        if (DBG) {
+        synchronized(result.lockObj) {
             if (result.list != null) {
-                log("SST.getAllCellInfo(): X size=" + result.list.size()
+                if (DBG) log("SST.getAllCellInfo(): X size=" + result.list.size()
                         + " list=" + result.list);
+                return result.list;
             } else {
-               log("SST.getAllCellInfo(): X size=0 list=null");
+                if (DBG) log("SST.getAllCellInfo(): X size=0 list=null");
+                return null;
             }
         }
-        return result.list;
     }
 
     /**
@@ -820,55 +843,73 @@ public abstract class ServiceStateTracker extends Handler {
         }
     }
 
-    protected void updateCarrierMccMncConfiguration(String newOp, String oldOp, Context context) {
-        // if we have a change in operator, notify wifi (even to/from none)
-        if (((newOp == null) && (TextUtils.isEmpty(oldOp) == false)) ||
-                ((newOp != null) && (newOp.equals(oldOp) == false))) {
-            MccTable.updateMccMncConfiguration(context, newOp, true);
-        }
-    }
-
     protected boolean isCallerOnDifferentThread() {
         boolean value = Thread.currentThread() != getLooper().getThread();
         if (VDBG) log("isCallerOnDifferentThread: " + value);
         return value;
     }
 
+    protected void updateCarrierMccMncConfiguration(String newOp, String oldOp, Context context) {
+        // if we have a change in operator, notify wifi (even to/from none)
+        if (((newOp == null) && (TextUtils.isEmpty(oldOp) == false)) ||
+                ((newOp != null) && (newOp.equals(oldOp) == false))) {
+            log("update mccmnc=" + newOp + " fromServiceState=true");
+            MccTable.updateMccMncConfiguration(context, newOp, true);
+        }
+    }
+
     protected boolean isIwlanFeatureAvailable() {
         boolean iwlanAvailable = mPhoneBase.getContext().getResources()
                 .getBoolean(com.android.internal.R.bool.config_feature_iwlan_enabled);
         log("Iwlan feature available = " + iwlanAvailable);
-        return iwlanAvailable && isWifiConnected();
+        return iwlanAvailable;
     }
 
-    protected boolean isWifiConnected() {
-        log("isWifiConnected()");
-        ConnectivityManager connManager
-                = (ConnectivityManager) mPhoneBase.getContext().getSystemService(Context
-                        .CONNECTIVITY_SERVICE);
-        NetworkInfo mWifi = connManager.getNetworkInfo(ConnectivityManager.TYPE_WIFI);
-
-        boolean wifi = mWifi.isConnected();
-        log("isWifiConnected = " + wifi);
-
-        return wifi;
-    }
-
-    /**
-     * As per 3GPP spec during APM WWAN can be offloaded to IWLAN.
-     * in such a handover the internet or default IP traffic is
-     * carried over the wifi transport(not neccessarily using core network)
-     * but the MMS and SUPL, which does require suppoort of core network can be
-     * offloaded on IWLAN and using a secure ipsec tunnel. This way the
-     * signalling and data could be sent over to core network even in APM.
+    /* Consider the below usecase.
+     * 1. WQE and IWLAN features are enabled and hence device can have wifi and mobile
+     * connectivity simultaneously.
+     * 2. Current available RATs are WWAN and IWLAN, both co-exists.
+     * 3. RIL informs preferred RAT as WWAN. Telephony could have default and
+     * non-default PDP activated. Since IWLAN is also available, non-default pdp
+     * would be over IWLAN.
+     * 4. WWAN goes to OOS.
+     * 5. RIL informs that default PDP is lost(unsol_data_call_list).
+     * 6. Telephony attempts to retry the default APN context.
+     * 7. RIL informs current preferred RAT is IWLAN.
+     * 8. Telephony marks default/ia APN as "not available".
+     * 9. Upon retry timer expiration, telephony does not bringup default APN
+     * since is marked as unavailable. DC object moved to IDLE state.
+     * 10 Later WWAN gets back in service.
+     * 11. RIL informs preferred RAT as WWAN. So the RAT transition was as
+     * follow.
+     * IWLAN(Attached) -> WWAN(Attached)
+     * 12. There is no trigger for telephony to initiate data call on
+     * connnectable ApnContext after WWAN gets in service.
+     * 13 Below method detects the transition from IWLAN to WWAN in attached
+     * state and informs telephony that we are in WWAN attached state.
+     * 14. Telephony would look into all the connectable APNs are would trigger
+     * data call based on prevailing conditions.
      *
-     * Below method simply disables the default APN type for the cases where WWAN
-     * to iWLAN handover occurs without APM.
      */
-    protected void handleIwlan() {
-        log("handleIwlan");
+    protected void processIwlanToWwanTransition(ServiceState ss) {
+        // Wifi connected(iwlan feature on) AND a valid(non-wlan) RAT present
+        // AND attached AND previous RAT was iwlan.
+        //
+        // Notify that we are attached so that we can setup connectable
+        // APNs.
+        if (isIwlanFeatureAvailable() &&
+                (ss.getRilDataRadioTechnology()
+                 != ServiceState.RIL_RADIO_TECHNOLOGY_IWLAN) &&
+                (ss.getRilDataRadioTechnology()
+                 != ServiceState.RIL_RADIO_TECHNOLOGY_UNKNOWN) &&
+                (ss.getDataRegState() == ServiceState.STATE_IN_SERVICE) &&
+                (mIwlanRatAvailable == true)) {
 
-        DcTrackerBase dcTracker = mPhoneBase.mDcTracker;
-        dcTracker.disableApnType(PhoneConstants.APN_TYPE_DEFAULT);
+            log("pollStateDone: Wifi connected and moved out of iwlan " +
+                    "and wwan is attached.");
+            mAttachedRegistrants.notifyRegistrants();
+        }
+
     }
+
 }

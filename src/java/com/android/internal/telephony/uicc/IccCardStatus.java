@@ -29,14 +29,10 @@ public class IccCardStatus {
         CARDSTATE_PRESENT,
         CARDSTATE_ERROR;
 
-        boolean isCardPresent() {
+        public boolean isCardPresent() {
             return this == CARDSTATE_PRESENT;
         }
-
-        boolean isCardFaulty() {
-            return this == CARDSTATE_ERROR;
-        }
-    };
+    }
 
     public enum PinState {
         PINSTATE_UNKNOWN,

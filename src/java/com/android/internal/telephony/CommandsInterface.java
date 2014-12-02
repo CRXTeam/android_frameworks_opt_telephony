@@ -20,6 +20,7 @@
 package com.android.internal.telephony;
 
 import com.android.internal.telephony.cdma.CdmaSmsBroadcastConfigInfo;
+import com.android.internal.telephony.dataconnection.DataProfile;
 import com.android.internal.telephony.gsm.SmsBroadcastConfigInfo;
 import com.android.internal.telephony.uicc.IccCardStatus;
 
@@ -194,6 +195,10 @@ public interface CommandsInterface {
     void registerForInCallVoicePrivacyOff(Handler h, int what, Object obj);
     void unregisterForInCallVoicePrivacyOff(Handler h);
 
+    /** Single Radio Voice Call State progress notifications */
+    void registerForSrvccStateChanged(Handler h, int what, Object obj);
+    void unregisterForSrvccStateChanged(Handler h);
+
     /**
      * Handlers for subscription status change indications.
      *
@@ -203,6 +208,12 @@ public interface CommandsInterface {
      */
     void registerForSubscriptionStatusChanged(Handler h, int what, Object obj);
     void unregisterForSubscriptionStatusChanged(Handler h);
+
+    /**
+     * fires on any change in hardware configuration.
+     */
+    void registerForHardwareConfigChanged(Handler h, int what, Object obj);
+    void unregisterForHardwareConfigChanged(Handler h);
 
     /**
      * unlike the register* methods, there's only one new 3GPP format SMS handler.
@@ -1068,14 +1079,13 @@ public interface CommandsInterface {
 
     /**
      * Send an SMS message, Identical to sendSMS,
-     * except that more messages are expected to be sent soon.
+     * except that more messages are expected to be sent soon
      * smscPDU is smsc address in PDU form GSM BCD format prefixed
      *      by a length byte (as expected by TS 27.005) or NULL for default SMSC
      * pdu is SMS in PDU format as an ASCII hex string
      *      less the SMSC address
      */
     void sendSMSExpectMore (String smscPDU, String pdu, Message response);
-
 
     /**
      * @param pdu is CDMA-SMS in internal pseudo-PDU format
@@ -1343,16 +1353,11 @@ public interface CommandsInterface {
      * Query the list of band mode supported by RF.
      *
      * @param response is callback message
-     *        ((AsyncResult)response.obj).result  is an int[] with every
-     *        element representing one avialable BM_*_BAND
+     *        ((AsyncResult)response.obj).result  is an int[] where int[0] is
+     *        the size of the array and the rest of each element representing
+     *        one available BM_*_BAND
      */
     void queryAvailableBandMode (Message response);
-
-    /**
-     * Set the current preferred network type. This will be the last
-     * networkType that was passed to setPreferredNetworkType.
-     */
-    void setCurrentPreferredNetworkType();
 
     /**
      *  Requests to set the preferred network type for searching and registering
@@ -1419,6 +1424,11 @@ public interface CommandsInterface {
 
     void invokeOemRilRequestStrings(String[] strings, Message response);
 
+    /**
+     * Fires when RIL_UNSOL_OEM_HOOK_RAW is received from the RIL.
+     */
+    void setOnUnsolOemHookRaw(Handler h, int what, Object obj);
+    void unSetOnUnsolOemHookRaw(Handler h);
 
     /**
      * Send TERMINAL RESPONSE to the SIM, after processing a proactive command
@@ -1682,20 +1692,31 @@ public interface CommandsInterface {
     public void getDataCallProfile(int appType, Message result);
 
     /**
-     * Return if the current radio is LTE on GSM
-     * @hide
-     */
-    public int getLteOnGsmMode();
-
-    /**
      * Request the ISIM application on the UICC to perform the AKA
      * challenge/response algorithm for IMS authentication. The nonce string
      * and challenge response are Base64 encoded Strings.
      *
      * @param nonce the nonce string to pass with the ISIM authentication request
      * @param response a callback message with the String response in the obj field
+     * @deprecated
+     * @see requestIccSimAuthentication
      */
     public void requestIsimAuthentication(String nonce, Message response);
+
+    /**
+     * Request the SIM application on the UICC to perform authentication
+     * challenge/response algorithm. The data string and challenge response are
+     * Base64 encoded Strings.
+     * Can support EAP-SIM, EAP-AKA with results encoded per 3GPP TS 31.102.
+     *
+     * @param authContext is the P2 parameter that specifies the authentication context per 3GPP TS
+     *                    31.102 (Section 7.1.2)
+     * @param data authentication challenge data
+     * @param aid used to determine which application/slot to send the auth command to. See ETSI
+     *            102.221 8.1 and 101.220 4
+     * @param response a callback message with the String response in the obj field
+     */
+    public void requestIccSimAuthentication(int authContext, String data, String aid, Message response);
 
     /**
      * Get the current Voice Radio Technology.
@@ -1761,10 +1782,132 @@ public interface CommandsInterface {
             String password, Message result);
 
     /**
+     * Set data profiles in modem
+     *
+     * @param dps
+     *            Array of the data profiles set to modem
+     * @param result
+     *            callback message contains the information of SUCCESS/FAILURE
+     */
+    public void setDataProfile(DataProfile[] dps, Message result);
+
+    /**
      * Notifiy that we are testing an emergency call
      */
     public void testingEmergencyCall();
 
+    /**
+     * Open a logical channel to the SIM.
+     *
+     * Input parameters equivalent to TS 27.007 AT+CCHO command.
+     *
+     * @param AID Application id. See ETSI 102.221 and 101.220.
+     * @param response Callback message. response.obj will be an int [1] with
+     *            element [0] set to the id of the logical channel.
+     */
+    public void iccOpenLogicalChannel(String AID, Message response);
+
+    /**
+     * Close a previously opened logical channel to the SIM.
+     *
+     * Input parameters equivalent to TS 27.007 AT+CCHC command.
+     *
+     * @param channel Channel id. Id of the channel to be closed.
+     * @param response Callback message.
+     */
+    public void iccCloseLogicalChannel(int channel, Message response);
+
+    /**
+     * Exchange APDUs with the SIM on a logical channel.
+     *
+     * Input parameters equivalent to TS 27.007 AT+CGLA command.
+     *
+     * @param channel Channel id of the channel to use for communication. Has to
+     *            be greater than zero.
+     * @param cla Class of the APDU command.
+     * @param instruction Instruction of the APDU command.
+     * @param p1 P1 value of the APDU command.
+     * @param p2 P2 value of the APDU command.
+     * @param p3 P3 value of the APDU command. If p3 is negative a 4 byte APDU
+     *            is sent to the SIM.
+     * @param data Data to be sent with the APDU.
+     * @param response Callback message. response.obj.userObj will be
+     *            an IccIoResult on success.
+     */
+    public void iccTransmitApduLogicalChannel(int channel, int cla, int instruction,
+            int p1, int p2, int p3, String data, Message response);
+
+    /**
+     * Exchange APDUs with the SIM on a basic channel.
+     *
+     * Input parameters equivalent to TS 27.007 AT+CSIM command.
+     *
+     * @param cla Class of the APDU command.
+     * @param instruction Instruction of the APDU command.
+     * @param p1 P1 value of the APDU command.
+     * @param p2 P2 value of the APDU command.
+     * @param p3 P3 value of the APDU command. If p3 is negative a 4 byte APDU
+     *            is sent to the SIM.
+     * @param data Data to be sent with the APDU.
+     * @param response Callback message. response.obj.userObj will be
+     *            an IccIoResult on success.
+     */
+    public void iccTransmitApduBasicChannel(int cla, int instruction, int p1, int p2,
+            int p3, String data, Message response);
+
+    /**
+     * Get ATR (Answer To Reset; as per ISO/IEC 7816-4) from SIM card
+     *
+     * @param response Callback message
+     */
+    public void getAtr(Message response);
+
+    /**
+     * Read one of the NV items defined in {@link RadioNVItems} / {@code ril_nv_items.h}.
+     * Used for device configuration by some CDMA operators.
+     *
+     * @param itemID the ID of the item to read
+     * @param response callback message with the String response in the obj field
+     */
+    void nvReadItem(int itemID, Message response);
+
+    /**
+     * Write one of the NV items defined in {@link RadioNVItems} / {@code ril_nv_items.h}.
+     * Used for device configuration by some CDMA operators.
+     *
+     * @param itemID the ID of the item to read
+     * @param itemValue the value to write, as a String
+     * @param response Callback message.
+     */
+    void nvWriteItem(int itemID, String itemValue, Message response);
+
+    /**
+     * Update the CDMA Preferred Roaming List (PRL) in the radio NV storage.
+     * Used for device configuration by some CDMA operators.
+     *
+     * @param preferredRoamingList byte array containing the new PRL
+     * @param response Callback message.
+     */
+    void nvWriteCdmaPrl(byte[] preferredRoamingList, Message response);
+
+    /**
+     * Perform the specified type of NV config reset. The radio will be taken offline
+     * and the device must be rebooted after erasing the NV. Used for device
+     * configuration by some CDMA operators.
+     *
+     * @param resetType reset type: 1: reload NV reset, 2: erase NV reset, 3: factory NV reset
+     * @param response Callback message.
+     */
+    void nvResetConfig(int resetType, Message response);
+
+    /**
+     *  returned message
+     *  retMsg.obj = AsyncResult ar
+     *  ar.exception carries exception on failure
+     *  ar.userObject contains the orignal value of result.obj
+     *  ar.result contains a List of HardwareConfig
+     */
+    void getHardwareConfig (Message result);
 
     /**
      * @return version of the ril.
@@ -1785,44 +1928,42 @@ public interface CommandsInterface {
      * @param result
      *          Callback message contains the information of SUCCESS/FAILURE.
      */
+    // FIXME Update the doc and consider modifying the request to make more generic.
     public void setUiccSubscription(int slotId, int appIndex, int subId, int subStatus,
             Message result);
 
     /**
-     * Set Data Subscription preference at Modem.
+     * Tells the modem if data is allowed or not.
      *
+     * @param allowed
+     *          true = allowed, false = not alowed
      * @param result
      *          Callback message contains the information of SUCCESS/FAILURE.
      */
-    public void setDataSubscription (Message result);
+    // FIXME We may need to pass AID and slotid also
+    public void setDataAllowed(boolean allowed, Message result);
 
     /**
-     * Request to enable or disable the tune away state.
-     * @param tuneAway true to enable, false to disable
-     * @param response is callback message
-     */
-    void setTuneAway(boolean tuneAway, Message response);
+      * Request to get modem stack capabilities
+      * @param response is callback message
+      */
+    void getModemCapability(Message response);
+
 
     /**
-     * Sets the provided subIndex as priority subscription index.
-     * @param subIndex Subscription index
-     * @param response is callback message
-     */
-    void setPrioritySub(int subIndex, Message response);
+      * Request to update binding status on the stack
+      * @param stackId is stack to update binding
+      * @param enable is to tell enable or disable binding
+      * @param response is callback message
+      */
+    void updateStackBinding(int stackId, int enable, Message response);
 
     /**
-     * Set the default voice subscription id.
-     * @param subIndex subscription index
-     * @param response is callback message
+     * Inform RIL that the device is shutting down
+     *
+     * @param result Callback message contains the information of SUCCESS/FAILURE
      */
-    void setDefaultVoiceSub(int subIndex, Message response);
-
-    /**
-     * Request to update the current local call hold state.
-     * @param lchStatus, true if call is in lch state
-     * @param response is callback message
-     */
-    void setLocalCallHold(int lchStatus, Message response);
+    public void requestShutdown(Message result);
 
     /**
      * @hide
@@ -1832,9 +1973,33 @@ public interface CommandsInterface {
 
     /**
      * @hide
-     * samsung stk service implementation - set up registrant for sending
-     * sms send result from modem(RIL) to catService
+     * Register/unregister for WWAN and IWLAN coexistence
+     * notification.
+     *
+     * @param h Handler for notification message.
+     * @param what User-defined message code.
+     * @param obj User object.
      */
-    void setOnCatSendSmsResult(Handler h, int what, Object obj);
-    void unSetOnCatSendSmsResult(Handler h);
+    void registerForWwanIwlanCoexistence(Handler h, int what, Object obj);
+    void unregisterForWwanIwlanCoexistence(Handler h);
+
+    void registerForSimRefreshEvent(Handler h, int what, Object obj);
+    void unregisterForSimRefreshEvent(Handler h);
+
+    /**
+     * Request to update the current local call hold state.
+     * @param lchStatus, true if call is in lch state
+     */
+    public void setLocalCallHold(int lchStatus);
+
+    /**
+     * Register/unregister for modem capability oem hook event
+     *
+     * @param h Handler for notification message.
+     * @param what User-defined message code.
+     * @param obj User object.
+     */
+
+    void registerForModemCapEvent(Handler h, int what, Object obj);
+    void unregisterForModemCapEvent(Handler h);
 }

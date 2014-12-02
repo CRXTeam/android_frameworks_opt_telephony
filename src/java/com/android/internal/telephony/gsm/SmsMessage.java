@@ -19,6 +19,8 @@ package com.android.internal.telephony.gsm;
 import android.telephony.PhoneNumberUtils;
 import android.text.format.Time;
 import android.telephony.Rlog;
+import android.content.res.Resources;
+import android.text.TextUtils;
 
 import com.android.internal.telephony.EncodeException;
 import com.android.internal.telephony.GsmAlphabet;
@@ -26,6 +28,7 @@ import com.android.internal.telephony.GsmAlphabet.TextEncodingDetails;
 import com.android.internal.telephony.uicc.IccUtils;
 import com.android.internal.telephony.SmsHeader;
 import com.android.internal.telephony.SmsMessageBase;
+import com.android.internal.telephony.Sms7BitEncodingTranslator;
 
 import java.io.ByteArrayOutputStream;
 import java.io.UnsupportedEncodingException;
@@ -834,6 +837,23 @@ public class SmsMessage extends SmsMessageBase {
         }
 
         /**
+         * Interprets the user data payload as pack GSM 8-bit (a GSM alphabet string that's
+         * stored in 8-bit unpacked format) characters, and decodes them into a String.
+         *
+         * @param byteCount the number of byest in the user data payload
+         * @return a String with the decoded characters
+         */
+        String getUserDataGSM8bit(int byteCount) {
+            String ret;
+
+            ret = GsmAlphabet.gsm8BitUnpackedToString(mPdu, mCur, byteCount);
+
+            mCur += byteCount;
+
+            return ret;
+        }
+
+        /**
          * Interprets the user data payload as UCS2 characters, and
          * decodes them into a String.
          *
@@ -889,16 +909,36 @@ public class SmsMessage extends SmsMessageBase {
      */
     public static TextEncodingDetails calculateLength(CharSequence msgBody,
             boolean use7bitOnly) {
-        TextEncodingDetails ted = GsmAlphabet.countGsmSeptets(msgBody, use7bitOnly);
+        CharSequence newMsgBody = null;
+        Resources r = Resources.getSystem();
+        if (r.getBoolean(com.android.internal.R.bool.config_sms_force_7bit_encoding)) {
+            newMsgBody  = Sms7BitEncodingTranslator.translate(msgBody);
+        }
+        if (TextUtils.isEmpty(newMsgBody)) {
+            newMsgBody = msgBody;
+        }
+        TextEncodingDetails ted = GsmAlphabet.countGsmSeptets(newMsgBody, use7bitOnly);
         if (ted == null) {
             ted = new TextEncodingDetails();
-            int octets = msgBody.length() * 2;
-            ted.codeUnitCount = msgBody.length();
+            int octets = newMsgBody.length() * 2;
+            ted.codeUnitCount = newMsgBody.length();
             if (octets > MAX_USER_DATA_BYTES) {
-                ted.msgCount = (octets + (MAX_USER_DATA_BYTES_WITH_HEADER - 1)) /
-                        MAX_USER_DATA_BYTES_WITH_HEADER;
+                // If EMS is not supported, break down EMS into single segment SMS
+                // and add page info " x/y".
+                // In the case of UCS2 encoding type, we need 8 bytes for this
+                // but we only have 6 bytes from UDH, so truncate the limit for
+                // each segment by 2 bytes (1 char).
+                int max_user_data_bytes_with_header = MAX_USER_DATA_BYTES_WITH_HEADER;
+                if (!android.telephony.SmsMessage.hasEmsSupport()) {
+                    // make sure total number of segments is less than 10
+                    if (octets <= 9 * (max_user_data_bytes_with_header - 2))
+                        max_user_data_bytes_with_header -= 2;
+                }
+
+                ted.msgCount = (octets + (max_user_data_bytes_with_header - 1)) /
+                        max_user_data_bytes_with_header;
                 ted.codeUnitsRemaining = ((ted.msgCount *
-                        MAX_USER_DATA_BYTES_WITH_HEADER) - octets) / 2;
+                        max_user_data_bytes_with_header) - octets) / 2;
             } else {
                 ted.msgCount = 1;
                 ted.codeUnitsRemaining = (MAX_USER_DATA_BYTES - octets)/2;
@@ -1216,6 +1256,15 @@ public class SmsMessage extends SmsMessageBase {
                     break;
 
                 case 1: // 8 bit data
+                    //Support decoding the user data payload as pack GSM 8-bit (a GSM alphabet string
+                    //that's stored in 8-bit unpacked format) characters.
+                    Resources r = Resources.getSystem();
+                    if (r.getBoolean(com.android.internal.
+                            R.bool.config_sms_decode_gsm_8bit_data)) {
+                        encodingType = ENCODING_8BIT;
+                        break;
+                    }
+
                 case 3: // reserved
                     Rlog.w(LOG_TAG, "1 - Unsupported SMS data coding scheme "
                             + (mDataCodingScheme & 0xff));
@@ -1367,8 +1416,19 @@ public class SmsMessage extends SmsMessageBase {
 
         switch (encodingType) {
         case ENCODING_UNKNOWN:
-        case ENCODING_8BIT:
             mMessageBody = null;
+            break;
+
+        case ENCODING_8BIT:
+            //Support decoding the user data payload as pack GSM 8-bit (a GSM alphabet string
+            //that's stored in 8-bit unpacked format) characters.
+            Resources r = Resources.getSystem();
+            if (r.getBoolean(com.android.internal.
+                    R.bool.config_sms_decode_gsm_8bit_data)) {
+                mMessageBody = p.getUserDataGSM8bit(count);
+            } else {
+                mMessageBody = null;
+            }
             break;
 
         case ENCODING_7BIT:

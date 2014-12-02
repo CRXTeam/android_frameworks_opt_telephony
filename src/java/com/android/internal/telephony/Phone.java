@@ -1,6 +1,4 @@
 /*
- * Copyright (c) 2012-13, The Linux Foundation. All rights reserved.
- * Not a Contribution.
  * Copyright (C) 2007 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,8 +17,9 @@
 package com.android.internal.telephony;
 
 import android.content.Context;
-import android.net.LinkCapabilities;
 import android.net.LinkProperties;
+import android.net.NetworkCapabilities;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Message;
 import android.telephony.CellInfo;
@@ -29,14 +28,14 @@ import android.telephony.PhoneStateListener;
 import android.telephony.ServiceState;
 import android.telephony.SignalStrength;
 
+import com.android.internal.telephony.imsphone.ImsPhone;
 import com.android.internal.telephony.test.SimulatedRadioControl;
 import com.android.internal.telephony.uicc.IsimRecords;
+import com.android.internal.telephony.uicc.UiccCard;
 import com.android.internal.telephony.uicc.UsimServiceTable;
-
-import com.android.internal.telephony.PhoneConstants.*; // ???? 
+import com.android.internal.telephony.PhoneConstants.*; // ????
 
 import java.util.List;
-import java.util.Map;
 
 /**
  * Internal interface used to control the phone; SDK developers cannot
@@ -78,6 +77,7 @@ public interface Phone {
     static final String FEATURE_ENABLE_FOTA = "enableFOTA";
     static final String FEATURE_ENABLE_IMS = "enableIMS";
     static final String FEATURE_ENABLE_CBS = "enableCBS";
+    static final String FEATURE_ENABLE_EMERGENCY = "enableEmergency";
 
     /**
      * Optional reasons for disconnect and connect
@@ -108,6 +108,7 @@ public interface Phone {
     static final String REASON_CONNECTED = "connected";
     static final String REASON_NV_READY = "nvReady";
     static final String REASON_SINGLE_PDN_ARBITRATION = "SinglePdnArbitration";
+    static final String REASON_DATA_SPECIFIC_DISABLED = "specificDisabled";
     static final String REASON_IWLAN_AVAILABLE = "iwlanAvailable";
 
     // Used for band mode selection methods
@@ -134,7 +135,7 @@ public interface Phone {
 
     int NT_MODE_LTE_CDMA_AND_EVDO        = RILConstants.NETWORK_MODE_LTE_CDMA_EVDO;
     int NT_MODE_LTE_GSM_WCDMA            = RILConstants.NETWORK_MODE_LTE_GSM_WCDMA;
-    int NT_MODE_LTE_CMDA_EVDO_GSM_WCDMA  = RILConstants.NETWORK_MODE_LTE_CMDA_EVDO_GSM_WCDMA;
+    int NT_MODE_LTE_CDMA_EVDO_GSM_WCDMA  = RILConstants.NETWORK_MODE_LTE_CDMA_EVDO_GSM_WCDMA;
     int NT_MODE_LTE_ONLY                 = RILConstants.NETWORK_MODE_LTE_ONLY;
     int NT_MODE_LTE_WCDMA                = RILConstants.NETWORK_MODE_LTE_WCDMA;
     int PREFERRED_NT_MODE                = RILConstants.PREFERRED_NETWORK_MODE;
@@ -186,67 +187,6 @@ public interface Phone {
     public static final int CDMA_OTA_PROVISION_STATUS_OTAPA_STOPPED = 10;
     public static final int CDMA_OTA_PROVISION_STATUS_OTAPA_ABORTED = 11;
 
-    /*
-     * Type of the call based on the media type and the direction of the media.
-     */
-
-    public static final int CALL_TYPE_VOICE = 0; /*
-                                                  * Voice call-audio in both
-                                                  * directions
-                                                  */
-
-    public static final int CALL_TYPE_VT_TX = 1; /*
-                                                  * PS Video telephony call: one
-                                                  * way TX video, two way audio
-                                                  */
-
-    public static final int CALL_TYPE_VT_RX = 2; /*
-                                                  * Video telephony call: one
-                                                  * way RX video, two way audio
-                                                  */
-
-    public static final int CALL_TYPE_VT = 3; /*
-                                               * Video telephony call: two way
-                                               * video, two way audio
-                                               */
-
-    public static final int CALL_TYPE_VT_NODIR = 4; /*
-                                                     * Video telephony call: no
-                                                     * direction, two way audio,
-                                                     * intermediate state in a
-                                                     * video call till video
-                                                     * link is setup
-                                                     */
-
-    public static final int CALL_TYPE_UNKNOWN = 10; /*
-                                                     * Unknown Call type, may be
-                                                     * used for answering call
-                                                     * with same call type as
-                                                     * incoming call. This is
-                                                     * only for telephony, not
-                                                     * meant to be passed to RIL
-                                                     */
-
-    public static final int CALL_DOMAIN_CS = 1; /*
-                                                 * Circuit switched domain
-                                                 */
-    public static final int CALL_DOMAIN_PS = 2; /*
-                                                 * Packet switched domain
-                                                 */
-    public static final int CALL_DOMAIN_AUTOMATIC = 3; /*
-                                                        * Automatic domain. Sent
-                                                        * by Android to indicate
-                                                        * that the domain for a
-                                                        * new call should be
-                                                        * selected by modem
-                                                        */
-    public static final int CALL_DOMAIN_NOT_SET = 4; /*
-                                                      * Init value used
-                                                      * internally by telephony
-                                                      * until domain is set
-                                                      */
-
-    public static final String EXTRAS_IS_CONFERENCE_URI = "isConferenceUri";
 
     /**
      * Get the current ServiceState. Use
@@ -362,9 +302,9 @@ public interface Phone {
     LinkProperties getLinkProperties(String apnType);
 
     /**
-     * Return the LinkCapabilities
+     * Return the NetworkCapabilities
      */
-    LinkCapabilities getLinkCapabilities(String apnType);
+    NetworkCapabilities getNetworkCapabilities(String apnType);
 
     /**
      * Get current signal strength. No change notification available on this
@@ -390,6 +330,15 @@ public interface Phone {
     void unregisterForUnknownConnection(Handler h);
 
     /**
+     * Notifies when a Handover happens due to SRVCC or Silent Redial
+     */
+    void registerForHandoverStateChanged(Handler h, int what, Object obj);
+
+    /**
+     * Unregisters for handover state notifications
+     */
+    void unregisterForHandoverStateChanged(Handler h);
+    /**
      * Register for getting notifications for change in the Call State {@link Call.State}
      * This is called PreciseCallState because the call state is more precise than the
      * {@link PhoneConstants.State} which can be obtained using the {@link PhoneStateListener}
@@ -405,7 +354,6 @@ public interface Phone {
      * Extraneous calls are tolerated silently.
      */
     void unregisterForPreciseCallStateChanged(Handler h);
-
 
     /**
      * Notifies when a new ringing or waiting connection has appeared.<p>
@@ -427,6 +375,22 @@ public interface Phone {
      */
 
     void unregisterForNewRingingConnection(Handler h);
+
+    /**
+     * Notifies when phone's video capabilities changes <p>
+     *
+     *  Messages received from this:
+     *  Message.obj will be an AsyncResult
+     *  AsyncResult.userObj = obj
+     *  AsyncResult.result = true if phone supports video calling <p>
+     */
+    public void registerForVideoCapabilityChanged(Handler h, int what, Object obj);
+
+    /**
+     * Unregisters for video capability changed notification.
+     * Extraneous calls are tolerated silently
+     */
+    public void unregisterForVideoCapabilityChanged(Handler h);
 
     /**
      * Notifies when an incoming call rings.<p>
@@ -461,6 +425,23 @@ public interface Phone {
      */
 
     void unregisterForRingbackTone(Handler h);
+
+    /**
+     * Notifies when out-band on-hold tone is needed.<p>
+     *
+     *  Messages received from this:
+     *  Message.obj will be an AsyncResult
+     *  AsyncResult.userObj = obj
+     *  AsyncResult.result = boolean, true to start play on-hold tone
+     *                       and false to stop. <p>
+     */
+    void registerForOnHoldTone(Handler h, int what, Object obj);
+
+    /**
+     * Unregisters for on-hold tone notification.
+     */
+
+    void unregisterForOnHoldTone(Handler h);
 
     /**
      * Registers the handler to reset the uplink mute state to get
@@ -706,35 +687,18 @@ public interface Phone {
      * {@link #registerForPreciseCallStateChanged(android.os.Handler, int,
      * java.lang.Object) registerForPreciseCallStateChanged()}.
      *
+     * @param videoState The video state in which to answer the call.
      * @exception CallStateException when no call is ringing or waiting
      */
-    void acceptCall() throws CallStateException;
+    void acceptCall(int videoState) throws CallStateException;
 
     /**
-     * Answers a ringing or waiting call. Active calls, if any, go on hold.
-     * Answering occurs asynchronously, and final notification occurs via
-     * {@link #registerForPreciseCallStateChanged(android.os.Handler, int,
-     * java.lang.Object) registerForPreciseCallStateChanged()}.
+     * Deflects a ringing or waiting IMS call.
      *
-     * @exception CallStateException when no call is ringing or waiting
+     * @param number The number to deflect to.
+     * @exception CallStateException when no IMS call is ringing or waiting
      */
-    void acceptCall(int callType) throws CallStateException;
-
-    /**
-     * Gets call type for IMS calls.
-     *
-     * @return one of the call types in {@link Phone}
-     * @throws CallStateException
-     */
-    int getCallType(Call call) throws CallStateException;
-
-    /**
-     * Gets call domain for IMS calls.
-     *
-     * @return one of the call domains in {@link Phone}
-     * @throws CallStateException
-     */
-    int getCallDomain(Call call) throws CallStateException;
+    void deflectCall(String number) throws CallStateException;
 
     /**
      * Reject (ignore) a ringing call. In GSM, this means UDUB
@@ -813,36 +777,8 @@ public interface Phone {
     void explicitCallTransfer() throws CallStateException;
 
     /**
-     * Add participant during Conference Call
-     *
-     * @param dialString
-     * @param clir
-     * @param callType
-     * @param extras
-     * @throws CallStateException
-     */
-    void addParticipant(String dialString, int clir, int callType, String[] extras)
-            throws CallStateException;
-
-    /**
-     * Hangup along with reason/error message if any
-     *
-     * @param callId
-     * @param userUri
-     * @param confUri
-     * @param mpty
-     * @param failCause
-     * @param errorInfo
-     * @throws CallStateException
-     */
-    void hangupWithReason(int callId, String userUri,
-            boolean mpty, int failCause, String errorInfo) throws CallStateException;
-
-    void deflectCall(int connId, String number, Message response) throws CallStateException;
-
-    /**
-     * Clears all DISCONNECTED connections from Call connection lists. Calls
-     * that were in the DISCONNECTED state become idle. This occurs
+     * Clears all DISCONNECTED connections from Call connection lists.
+     * Calls that were in the DISCONNECTED state become idle. This occurs
      * synchronously.
      */
     void clearDisconnected();
@@ -904,12 +840,33 @@ public interface Phone {
      * cannot assume the audio path is connected (or a call index has been
      * assigned) until PhoneStateChanged notification has occurred.
      *
+     * @param dialString The dial string.
+     * @param videoState The desired video state for the connection.
      * @exception CallStateException if a new outgoing call is not currently
      * possible because no more call slots exist or a call exists that is
      * dialing, alerting, ringing, or waiting.  Other errors are
      * handled asynchronously.
      */
-    Connection dial(String dialString) throws CallStateException;
+    Connection dial(String dialString, int videoState) throws CallStateException;
+
+    /**
+     * Initiate a new voice connection. This happens asynchronously, so you
+     * cannot assume the audio path is connected (or a call index has been
+     * assigned) until PhoneStateChanged notification has occurred.
+     *
+     * @param dialString The dial string.
+     * @param videoState The desired video state for the connection.
+     * @param extras Additional (meta) call information.
+     *        OEMs can pass call extras (additional call info) Bundle
+     *        in the following format:
+     *        1) All values in the Bundle must be of type String
+     *        2) Keys for the values are defined in ImsCallProfile.java
+     * @exception CallStateException if a new outgoing call is not currently
+     *                possible because no more call slots exist or a call exists
+     *                that is dialing, alerting, ringing, or waiting. Other
+     *                errors are handled asynchronously.
+     */
+    Connection dial(String dialString, int videoState, Bundle extras) throws CallStateException;
 
     /**
      * Initiate a new voice connection with supplementary User to User
@@ -917,15 +874,18 @@ public interface Phone {
      * path is connected (or a call index has been assigned) until
      * PhoneStateChanged notification has occurred.
      *
+     * @param dialString The dial string.
+     * @param uusInfo The UUSInfo.
+     * @param videoState The desired video state for the connection.
      * @exception CallStateException if a new outgoing call is not currently
      *                possible because no more call slots exist or a call exists
      *                that is dialing, alerting, ringing, or waiting. Other
      *                errors are handled asynchronously.
      */
-    Connection dial(String dialString, UUSInfo uusInfo) throws CallStateException;
+    Connection dial(String dialString, UUSInfo uusInfo, int videoState) throws CallStateException;
 
     /**
-     * Initiate a new voice connection with call type and extras for IMS calls.
+     * Initiate to add a participant in an IMS call.
      * This happens asynchronously, so you cannot assume the audio path is
      * connected (or a call index has been assigned) until PhoneStateChanged
      * notification has occurred.
@@ -935,8 +895,7 @@ public interface Phone {
      *                that is dialing, alerting, ringing, or waiting. Other
      *                errors are handled asynchronously.
      */
-    public Connection dial(String dialString, int callType, String[] extras)
-            throws CallStateException;
+    public void addParticipant(String dialString) throws CallStateException;
 
     /**
      * Handles PIN MMI commands (PIN/PIN2/PUK/PUK2), which are initiated
@@ -1105,6 +1064,20 @@ public interface Phone {
                                   Message onComplete);
 
     /**
+     * getCallForwardingUncondTimerOptions
+     * gets a call forwarding option. The return value of
+     * ((AsyncResult)onComplete.obj) is an array of CallForwardInfo.
+     *
+     * @param commandInterfaceCFReason is one of the valid call forwarding
+     *        CF_REASONS, as defined in
+     *        <code>com.android.internal.telephony.CommandsInterface.</code>
+     * @param onComplete a callback message when the action is completed.
+     *        @see com.android.internal.telephony.CallForwardInfo for details.
+     */
+    void getCallForwardingUncondTimerOption(int commandInterfaceCFReason,
+                                  Message onComplete);
+
+    /**
      * setCallForwardingOptions
      * sets a call forwarding option.
      *
@@ -1123,6 +1096,30 @@ public interface Phone {
                                  int commandInterfaceCFAction,
                                  String dialingNumber,
                                  int timerSeconds,
+                                 Message onComplete);
+
+    /**
+     * setCallForwardingUncondTimerOptions
+     * sets a call forwarding unconditional Timer option.
+     *
+     * @param startHour indicates starting hour
+     * @param startMinute indicates starting minute
+     * @param endHour indicates ending hour
+     * @param endMinute indicates ending minute
+     * @param commandInterfaceCFReason is one of the valid call forwarding
+     *        CF_REASONS, as defined in
+     *        <code>com.android.internal.telephony.CommandsInterface.</code>
+     * @param commandInterfaceCFAction is one of the valid call forwarding
+     *        CF_ACTIONS, as defined in
+     *        <code>com.android.internal.telephony.CommandsInterface.</code>
+     * @param dialingNumber is the target phone number to forward calls to
+     * @param onComplete a callback message when the action is completed.
+     */
+    void setCallForwardingUncondTimerOption(int startHour, int startMinute,
+                                 int endHour, int endMinute,
+                                 int commandInterfaceCFReason,
+                                 int commandInterfaceCFAction,
+                                 String dialingNumber,
                                  Message onComplete);
 
     /**
@@ -1307,7 +1304,7 @@ public interface Phone {
     /**
      * Enables or disables echo suppression.
      */
-    void setEchoSuppressionEnabled(boolean enabled);
+    void setEchoSuppressionEnabled();
 
     /**
      * Invokes RIL_REQUEST_OEM_HOOK_RAW on RIL implementation.
@@ -1391,8 +1388,9 @@ public interface Phone {
      * Query the list of band mode supported by RF.
      *
      * @param response is callback message
-     *        ((AsyncResult)response.obj).result  is an int[] with every
-     *        element representing one avialable BM_*_BAND
+     *        ((AsyncResult)response.obj).result  is an int[] where int[0] is
+     *        the size of the array and the rest of each element representing
+     *        one available BM_*_BAND
      */
     void queryAvailableBandMode(Message response);
 
@@ -1405,6 +1403,16 @@ public interface Phone {
      * @param enable set true if enable data connection on roaming
      */
     void setDataRoamingEnabled(boolean enable);
+
+    /**
+     * @return true if user has enabled data
+     */
+    boolean getDataEnabled();
+
+    /**
+     * @param @enable set {@code true} if enable data connection
+     */
+    void setDataEnabled(boolean enable);
 
     /**
      *  Query the CDMA roaming preference setting
@@ -1433,38 +1441,6 @@ public interface Phone {
      * otherwise, null.
      */
     SimulatedRadioControl getSimulatedRadioControl();
-
-    /**
-     * Enables the specified APN type. Only works for "special" APN types,
-     * i.e., not the default APN.
-     * @param type The desired APN type. Cannot be {@link PhoneConstants#APN_TYPE_DEFAULT}.
-     * @return <code>APN_ALREADY_ACTIVE</code> if the current APN
-     * services the requested type.<br/>
-     * <code>APN_TYPE_NOT_AVAILABLE</code> if the carrier does not
-     * support the requested APN.<br/>
-     * <code>APN_REQUEST_STARTED</code> if the request has been initiated.<br/>
-     * <code>APN_REQUEST_FAILED</code> if the request was invalid.<br/>
-     * A <code>ACTION_ANY_DATA_CONNECTION_STATE_CHANGED</code> broadcast will
-     * indicate connection state progress.
-     */
-    int enableApnType(String type);
-
-    /**
-     * Disables the specified APN type, and switches back to the default APN,
-     * if necessary. Switching to the default APN will not happen if default
-     * data traffic has been explicitly disabled via a call to ITelephony#disableDataConnectivity.
-     * <p/>Only works for "special" APN types,
-     * i.e., not the default APN.
-     * @param type The desired APN type. Cannot be {@link PhoneConstants#APN_TYPE_DEFAULT}.
-     * @return <code>APN_ALREADY_ACTIVE</code> if the default APN
-     * is already active.<br/>
-     * <code>APN_REQUEST_STARTED</code> if the request to switch to the default
-     * APN has been initiated.<br/>
-     * <code>APN_REQUEST_FAILED</code> if the request was invalid.<br/>
-     * A <code>ACTION_ANY_DATA_CONNECTION_STATE_CHANGED</code> broadcast will
-     * indicate connection state progress.
-     */
-    int disableApnType(String type);
 
     /**
      * Report on whether data connectivity is allowed.
@@ -1564,6 +1540,18 @@ public interface Phone {
      * @param onComplete a callback message when the action is completed
      */
     void setTTYMode(int ttyMode, Message onComplete);
+
+   /**
+     * setUiTTYMode
+     * sets a TTY mode option.
+     * @param ttyMode is a one of the following:
+     * - {@link com.android.internal.telephony.Phone#TTY_MODE_OFF}
+     * - {@link com.android.internal.telephony.Phone#TTY_MODE_FULL}
+     * - {@link com.android.internal.telephony.Phone#TTY_MODE_HCO}
+     * - {@link com.android.internal.telephony.Phone#TTY_MODE_VCO}
+     * @param onComplete a callback message when the action is completed
+     */
+    void setUiTTYMode(int uiTtyMode, Message onComplete);
 
     /**
      * queryTTYMode
@@ -1825,12 +1813,6 @@ public interface Phone {
     public int getLteOnCdmaMode();
 
     /**
-     * Return if the current radio is LTE on GSM
-     * @hide
-     */
-    public int getLteOnGsmMode();
-
-    /**
      * TODO: Adding a function for each property is not good.
      * A fucntion of type getPhoneProp(propType) where propType is an
      * enum of GSM+CDMA+LTE props would be a better approach.
@@ -1842,27 +1824,11 @@ public interface Phone {
      */
     boolean isCspPlmnEnabled();
 
-    /* Checks if manual network selection is allowed
-     * @return true if manual network selection is allowed
-     * @return false if manual network selection is not allowed
-     */
-    public boolean isManualNetSelAllowed();
-
     /**
      * Return an interface to retrieve the ISIM records for IMS, if available.
      * @return the interface to retrieve the ISIM records, or null if not supported
      */
     IsimRecords getIsimRecords();
-
-    /**
-     * Request the ISIM application on the UICC to perform the AKA
-     * challenge/response algorithm for IMS authentication. The nonce string
-     * and challenge response are Base64 encoded Strings.
-     *
-     * @param nonce the nonce string to pass with the ISIM authentication request
-     * @param response a callback message with the String response in the obj field
-     */
-    void requestIsimAuthentication(String nonce, Message response);
 
     /**
      * Sets the SIM voice message waiting indicator records.
@@ -1878,6 +1844,12 @@ public interface Phone {
      * @return an interface to the UsimServiceTable record, or null if not available
      */
     UsimServiceTable getUsimServiceTable();
+
+    /**
+     * Gets the Uicc card corresponding to this phone.
+     * @return the UiccCard object corresponding to the phone ID.
+     */
+    UiccCard getUiccCard();
 
     /**
      * Unregister from all events it registered for and dispose objects
@@ -1905,136 +1877,106 @@ public interface Phone {
     void updatePhoneObject(int voiceRadioTech);
 
     /**
-     * Checks the radioState
-     * @return, true if radio state = RADIO_ON, false otherwise
-     */
-    boolean isRadioOn();
-
-    /**
-     * When the remote party in an IMS Call wants to upgrade or downgrade a
-     * call, a CallModifyRequest message is received. This function registers
-     * for that indication and sends a message to the handler when such an
-     * indication occurs. A response to the request can be sent with
-     * {@link Phone#acceptConnectionTypeChange(Map)} to accept the proposal, or
-     * {@link Phone#rejectConnectionTypeChange()}
+     * Read one of the NV items defined in {@link RadioNVItems} / {@code ril_nv_items.h}.
+     * Used for device configuration by some CDMA operators.
      *
-     * @param h The handler that will receive the message
-     * @param what The message to send
-     * @param obj User object to send with the message
+     * @param itemID the ID of the item to read
+     * @param response callback message with the String response in the obj field
      */
-    public void registerForModifyCallRequest(Handler h, int what, Object obj)
-            throws CallStateException;
-
-    public void unregisterForModifyCallRequest(Handler h) throws CallStateException;
+    void nvReadItem(int itemID, Message response);
 
     /**
-     * When both the party in an IMS Call wants to upgrade or downgrade a
-     * call, a CallModifyRequest success or failure message is received.
-     * This function registers for that indication and sends a message
-     * to the handler when such an indication occurs.
-     * @param h The handler that will receive the message
-     * @param what The message to send
-     * @param obj User object to send with the message
-     * @throws CallStateException
-     */
-    public void registerForModifyCallResponse(Handler h, int what, Object obj)
-            throws CallStateException;
-
-    public void unregisterForModifyCallResponse(Handler h) throws CallStateException;
-
-    /**
-     * When upgrade to video call and remote party does not support AVPF, IMS
-     * Phone retries upgrade request and this function registers for the failure
-     * indication
-     * @param h The handler that will receive the message
-     * @param what The message to send
-     * @param obj User object to send with the message
-     * @throws CallStateException
-     */
-    public void registerForAvpUpgradeFailure(Handler h, int what, Object obj)
-            throws CallStateException;
-
-    public void unregisterForAvpUpgradeFailure(Handler h) throws CallStateException;
-
-    /**
-     * Request a modification to a current connection This will send an
-     * indication to the remote party with new call details, which the remote
-     * party can agree to or reject. Used to upgrade/downgrade IMS call.
-     * @param msg A message to be returned with the result of the action.
-     * @param conn The connection to modify
-     * @param newCallType The new call type
-     * @param extras A map containing extra parameters
-     */
-    public void changeConnectionType(Message msg, Connection conn,
-            int newCallType, Map<String, String> newExtras) throws CallStateException;
-
-    /**
-     * Approve a request to change the call type. Optionally, provide new extra
-     * values.
+     * Write one of the NV items defined in {@link RadioNVItems} / {@code ril_nv_items.h}.
+     * Used for device configuration by some CDMA operators.
      *
-     * @param newExtras
-     * @throws CallStateException
+     * @param itemID the ID of the item to read
+     * @param itemValue the value to write, as a String
+     * @param response Callback message.
      */
-    public void acceptConnectionTypeChange(Connection conn, Map<String, String> newExtras)
-            throws CallStateException;
+    void nvWriteItem(int itemID, String itemValue, Message response);
 
     /**
-     * Reject a previously received request to change the call type.
+     * Update the CDMA Preferred Roaming List (PRL) in the radio NV storage.
+     * Used for device configuration by some CDMA operators.
      *
-     * @throws CallStateException
+     * @param preferredRoamingList byte array containing the new PRL
+     * @param response Callback message.
      */
-    public void rejectConnectionTypeChange(Connection conn) throws CallStateException;
-
-    /*
-     * To check VT call capability
-     */
-    public boolean isVTModifyAllowed() throws CallStateException;
+    void nvWriteCdmaPrl(byte[] preferredRoamingList, Message response);
 
     /**
-     * When a remote user requests to change the type of the connection (e.g. to
-     * upgrade from voice to video), it will be possible to query the proposed
-     * type with this method. After receiving an indication of a request (see
-     * {@link CallManager#registerForConnectionTypeChangeRequest(Handler, int, Object)}
-     * ). If no request has been received, this function returns the current
-     * type. The proposed type is cleared after calling
-     * {@link #acceptConnectionTypeChange(Map)} or
-     * {@link #rejectConnectionTypeChange()}.
+     * Perform the specified type of NV config reset. The radio will be taken offline
+     * and the device must be rebooted after erasing the NV. Used for device
+     * configuration by some CDMA operators.
      *
-     * @return The proposed connection type or the current connectionType if no
-     *         request exists.
+     * @param resetType reset type: 1: reload NV reset, 2: erase NV reset, 3: factory NV reset
+     * @param response Callback message.
      */
-    public int getProposedConnectionType(Connection conn) throws CallStateException;
+    void nvResetConfig(int resetType, Message response);
 
     /*
      * Returns the subscription id.
      */
-    public int getSubscription();
+    public long getSubId();
 
-    /**
-     * Request to enable or disable the tune away state.
-     * @param tuneAway true to enable, false to disable
-     * @param response is callback message
+    /*
+     * Returns the phone id.
      */
-    void setTuneAway(boolean tuneAway, Message response);
+    public int getPhoneId();
 
     /**
-     * Sets the provided subIndex as priority subscription index.
-     * @param subIndex Subscription index
-     * @param response is callback message
+     * Get P-CSCF address from PCO after data connection is established or modified.
+     * @param apnType the apnType, "ims" for IMS APN, "emergency" for EMERGENCY APN
      */
-    void setPrioritySub(int subIndex, Message response);
+    public String[] getPcscfAddress(String apnType);
 
     /**
-     * Set the default voice subscription id.
-     * @param subIndex subscription index
-     * @param response is callback message
+     * Set IMS registration state
      */
-    void setDefaultVoiceSub(int subIndex, Message response);
+    public void setImsRegistrationState(boolean registered);
 
     /**
-     * Request to update the current local call hold state.
+     * Return the ImsPhone phone co-managed with this phone
+     * @return an instance of an ImsPhone phone
+     */
+    public Phone getImsPhone();
+
+    /**
+     * Release the local instance of the ImsPhone and disconnect from
+     * the phone.
+     * @return the instance of the ImsPhone phone previously owned
+     */
+    public ImsPhone relinquishOwnershipOfImsPhone();
+
+    /**
+     * Take ownership and wire-up the input ImsPhone
+     * @param imsPhone ImsPhone to be used.
+     */
+    public void acquireOwnershipOfImsPhone(ImsPhone imsPhone);
+
+    /**
+     * Return the service state of mImsPhone if it is STATE_IN_SERVICE
+     * otherwise return the current voice service state
+     */
+    int getVoicePhoneServiceState();
+
+    /**
+     * Override the service provider name and the operator name for the current ICCID.
+     */
+    public boolean setOperatorBrandOverride(String brand);
+
+    /**
+     * Is Radio Present on the device and is it accessible
+     */
+    public boolean isRadioAvailable();
+
+    /**
+     * shutdown Radio gracefully
+     */
+    public void shutdownRadio();
+
+    /** Request to update the current local call hold state.
      * @param lchStatus, true if call is in lch state
-     * @param response is callback message
      */
-    void setLocalCallHold(int lchStatus, Message response);
+    public void setLocalCallHold(int lchStatus);
 }

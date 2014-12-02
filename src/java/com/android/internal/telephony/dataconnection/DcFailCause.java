@@ -15,6 +15,7 @@
  */
 package com.android.internal.telephony.dataconnection;
 
+import android.content.res.Resources;
 import android.content.Context;
 import android.telephony.Rlog;
 
@@ -43,7 +44,7 @@ public enum DcFailCause {
     SERVICE_OPTION_NOT_SUBSCRIBED(0x21),    /* no retry */
     SERVICE_OPTION_OUT_OF_ORDER(0x22),
     NSAPI_IN_USE(0x23),                     /* no retry */
-    REGULAR_DEACTIVATION(0x24),             /* Restart radio */
+    REGULAR_DEACTIVATION(0x24),             /* possibly restart radio, based on config */
     ONLY_IPV4_ALLOWED(0x32),                /* no retry */
     ONLY_IPV6_ALLOWED(0x33),                /* no retry */
     ONLY_SINGLE_BEARER_ALLOWED(0x34),
@@ -68,6 +69,8 @@ public enum DcFailCause {
     LOST_CONNECTION(0x10004),
     RESET_BY_FRAMEWORK(0x10005);
 
+    private final boolean mRestartRadioOnRegularDeactivation = Resources.getSystem().getBoolean(
+            com.android.internal.R.bool.config_restart_radio_on_pdp_fail_regular_deactivation);
     private final int mErrorCode;
     private static final HashMap<Integer, DcFailCause> sErrorCodeToFailCauseMap;
     static {
@@ -87,24 +90,26 @@ public enum DcFailCause {
 
     /** Radio has failed such that the radio should be restarted */
     public boolean isRestartRadioFail() {
-        Context context = PhoneFactory.getContext();
-        boolean radioResetOnRegularDeact = context.getResources().
-            getBoolean(com.android.internal.R.bool.config_radio_reset_on_regular_deactivation);
-
-        Rlog.d("isRestartRadioFail", "radioResetOnRegularDeact="+radioResetOnRegularDeact);
-
-        return (radioResetOnRegularDeact && (this == REGULAR_DEACTIVATION));
+        return (this == REGULAR_DEACTIVATION && mRestartRadioOnRegularDeactivation);
     }
 
     public boolean isPermanentFail() {
-        return (this == OPERATOR_BARRED) || (this == MISSING_UNKNOWN_APN) ||
-               (this == UNKNOWN_PDP_ADDRESS_TYPE) || (this == USER_AUTHENTICATION) ||
-               (this == ACTIVATION_REJECT_GGSN) || (this == SERVICE_OPTION_NOT_SUPPORTED) ||
-               (this == SERVICE_OPTION_NOT_SUBSCRIBED) || (this == NSAPI_IN_USE) ||
-               (this == ONLY_IPV4_ALLOWED) || (this == ONLY_IPV6_ALLOWED) ||
-               (this == PROTOCOL_ERRORS) ||
-               (this == RADIO_POWER_OFF) || (this == TETHERED_CALL_ACTIVE) ||
-               (this == RADIO_NOT_AVAILABLE) || (this == UNACCEPTABLE_NETWORK_PARAMETER);
+        Context context = PhoneFactory.getContext();
+        if (this == ACTIVATION_REJECT_GGSN) {
+            return (context.getResources().
+                    getBoolean(com.android.internal.R.bool.config_reject_ggsn_perm_failure));
+        } else if (this == PROTOCOL_ERRORS) {
+            return (context.getResources().
+                    getBoolean(com.android.internal.R.bool.config_protocol_errors_perm_failure));
+        } else {
+            return (this == OPERATOR_BARRED) || (this == MISSING_UNKNOWN_APN) ||
+                    (this == UNKNOWN_PDP_ADDRESS_TYPE) || (this == USER_AUTHENTICATION) ||
+                    (this == SERVICE_OPTION_NOT_SUPPORTED) ||
+                    (this == SERVICE_OPTION_NOT_SUBSCRIBED) || (this == NSAPI_IN_USE) ||
+                    (this == ONLY_IPV4_ALLOWED) || (this == ONLY_IPV6_ALLOWED) ||
+                    (this == RADIO_POWER_OFF) || (this == TETHERED_CALL_ACTIVE) ||
+                    (this == RADIO_NOT_AVAILABLE) || (this == UNACCEPTABLE_NETWORK_PARAMETER);
+        }
     }
 
     public boolean isEventLoggable() {

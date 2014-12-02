@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, Linux Foundation. All rights reserved.
+ * Copyright (c) 2014, Linux Foundation. All rights reserved.
  * Not a Contribution, Apache license notifications and license are retained
  * for attribution purposes only.
  *
@@ -49,8 +49,9 @@ public interface IccConstants {
     static final int EF_CFIS = 0x6FCB;
     static final int EF_IMG = 0x4f20;
 
-    // USIM SIM file ids from TS 31.102
+    // USIM SIM file ids from TS 131.102
     public static final int EF_PBR = 0x4F30;
+    public static final int EF_LI = 0x6F05;
 
     // GSM SIM file ids from CPHS (phase 2, version 4.2) CPHS4_2.WW6
     static final int EF_MAILBOX_CPHS = 0x6F17;
@@ -77,6 +78,10 @@ public interface IccConstants {
     static final int EF_CSIM_IMSIM = 0x6F22;
     static final int EF_CSIM_CDMAHOME = 0x6F28;
     static final int EF_CSIM_EPRL = 0x6F5A;
+    static final int EF_CSIM_PRL = 0x6F30;
+    // C.S0074-Av1.0 Section 4
+    static final int EF_CSIM_MLPL = 0x4F20;
+    static final int EF_CSIM_MSPL = 0x4F21;
 
     //ISIM access
     static final int EF_IMPU = 0x6f04;
@@ -84,6 +89,7 @@ public interface IccConstants {
     static final int EF_DOMAIN = 0x6f03;
     static final int EF_IST = 0x6f07;
     static final int EF_PCSCF = 0x6f09;
+    static final int EF_PSI = 0x6fe5;
 
     //plmnwact
     static final int EF_PLMNWACT = 0x6F60;
@@ -99,6 +105,7 @@ public interface IccConstants {
     static final String DF_GRAPHICS = "5F50";
     static final String DF_GSM = "7F20";
     static final String DF_CDMA = "7F25";
+    static final String DF_MMSS = "5F3C";
 
     //UICC access
     static final String DF_ADF = "7FFF";

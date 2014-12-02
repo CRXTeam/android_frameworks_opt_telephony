@@ -29,15 +29,12 @@ import java.util.List;
  * SimPhoneBookInterfaceManager to provide an inter-process communication to
  * access ADN-like SIM records.
  */
-public class IccPhoneBookInterfaceManagerProxy extends IIccPhoneBook.Stub {
+public class IccPhoneBookInterfaceManagerProxy {
     private IccPhoneBookInterfaceManager mIccPhoneBookInterfaceManager;
 
     public IccPhoneBookInterfaceManagerProxy(IccPhoneBookInterfaceManager
             iccPhoneBookInterfaceManager) {
         mIccPhoneBookInterfaceManager = iccPhoneBookInterfaceManager;
-        if(ServiceManager.getService("simphonebook") == null) {
-            ServiceManager.addService("simphonebook", this);
-        }
     }
 
     public void setmIccPhoneBookInterfaceManager(
@@ -45,7 +42,6 @@ public class IccPhoneBookInterfaceManagerProxy extends IIccPhoneBook.Stub {
         mIccPhoneBookInterfaceManager = iccPhoneBookInterfaceManager;
     }
 
-    @Override
     public boolean
     updateAdnRecordsInEfBySearch (int efid,
             String oldTag, String oldPhoneNumber,
@@ -55,13 +51,12 @@ public class IccPhoneBookInterfaceManagerProxy extends IIccPhoneBook.Stub {
                 efid, oldTag, oldPhoneNumber, newTag, newPhoneNumber, pin2);
     }
 
-    @Override
     public boolean updateAdnRecordsWithContentValuesInEfBySearch(int efid, ContentValues values,
             String pin2) throws android.os.RemoteException {
         return mIccPhoneBookInterfaceManager.updateAdnRecordsWithContentValuesInEfBySearch(efid,
                 values, pin2);
     }
-    @Override
+
     public boolean
     updateAdnRecordsInEfByIndex(int efid, String newTag,
             String newPhoneNumber, int index, String pin2) {
@@ -69,45 +64,30 @@ public class IccPhoneBookInterfaceManagerProxy extends IIccPhoneBook.Stub {
                 newTag, newPhoneNumber, index, pin2);
     }
 
-    @Override
     public int[] getAdnRecordsSize(int efid) {
         return mIccPhoneBookInterfaceManager.getAdnRecordsSize(efid);
     }
 
-    @Override
     public List<AdnRecord> getAdnRecordsInEf(int efid) {
         return mIccPhoneBookInterfaceManager.getAdnRecordsInEf(efid);
     }
 
-    @Override
-    public boolean updateUsimAdnRecordsInEfByIndex(int efid, String newTag, String newPhoneNumber,
-            String[] anrNumbers, String[] emails, int index, String pin2)
-            throws android.os.RemoteException {
-        return mIccPhoneBookInterfaceManager.updateUsimAdnRecordsInEfByIndex(efid, newTag,
-                newPhoneNumber, anrNumbers, emails, index, pin2);
-    }
-
-    @Override
     public int getAdnCount() {
         return mIccPhoneBookInterfaceManager.getAdnCount();
     }
 
-    @Override
     public int getAnrCount() {
         return mIccPhoneBookInterfaceManager.getAnrCount();
     }
 
-    @Override
     public int getEmailCount() {
         return mIccPhoneBookInterfaceManager.getEmailCount();
     }
 
-    @Override
     public int getSpareAnrCount() {
         return mIccPhoneBookInterfaceManager.getSpareAnrCount();
     }
 
-    @Override
     public int getSpareEmailCount() {
         return mIccPhoneBookInterfaceManager.getSpareEmailCount();
     }

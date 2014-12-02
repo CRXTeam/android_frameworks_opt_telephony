@@ -24,10 +24,10 @@ import android.content.Context;
 import android.os.Message;
 import android.os.RegistrantList;
 import android.os.Registrant;
-import android.os.Message;
 import android.os.Handler;
 import android.os.AsyncResult;
 import android.telephony.TelephonyManager;
+import com.android.internal.telephony.dataconnection.DataProfile;
 
 /**
  * {@hide}
@@ -70,10 +70,11 @@ public abstract class BaseCommands implements CommandsInterface {
     protected RegistrantList mIccRefreshRegistrants = new RegistrantList();
     protected RegistrantList mRilCellInfoListRegistrants = new RegistrantList();
     protected RegistrantList mSubscriptionStatusRegistrants = new RegistrantList();
-    protected RegistrantList mCdmaFwdBurstDtmfRegistrants = new RegistrantList();
-    protected RegistrantList mCdmaFwdContDtmfStartRegistrants = new RegistrantList();
-    protected RegistrantList mCdmaFwdContDtmfStopRegistrants = new RegistrantList();
-    protected RegistrantList mWmsReadyRegistrants = new RegistrantList();
+    protected RegistrantList mSrvccStateRegistrants = new RegistrantList();
+    protected RegistrantList mHardwareConfigChangeRegistrants = new RegistrantList();
+    protected RegistrantList mWwanIwlanCoexistenceRegistrants = new RegistrantList();
+    protected RegistrantList mSimRefreshRegistrants = new RegistrantList();
+    protected RegistrantList mModemCapRegistrants = new RegistrantList();
 
     protected Registrant mGsmSmsRegistrant;
     protected Registrant mCdmaSmsRegistrant;
@@ -87,7 +88,6 @@ public abstract class BaseCommands implements CommandsInterface {
     protected Registrant mCatProCmdRegistrant;
     protected Registrant mCatEventRegistrant;
     protected Registrant mCatCallSetUpRegistrant;
-    protected Registrant mCatSendSmsResultRegistrant;
     protected Registrant mIccSmsFullRegistrant;
     protected Registrant mEmergencyCallbackModeRegistrant;
     protected Registrant mRingRegistrant;
@@ -288,7 +288,10 @@ public abstract class BaseCommands implements CommandsInterface {
 
     @Override
     public void unSetOnNewGsmSms(Handler h) {
-        mGsmSmsRegistrant.clear();
+        if (mGsmSmsRegistrant != null && mGsmSmsRegistrant.getHandler() == h) {
+            mGsmSmsRegistrant.clear();
+            mGsmSmsRegistrant = null;
+        }
     }
 
     @Override
@@ -298,7 +301,10 @@ public abstract class BaseCommands implements CommandsInterface {
 
     @Override
     public void unSetOnNewCdmaSms(Handler h) {
-        mCdmaSmsRegistrant.clear();
+        if (mCdmaSmsRegistrant != null && mCdmaSmsRegistrant.getHandler() == h) {
+            mCdmaSmsRegistrant.clear();
+            mCdmaSmsRegistrant = null;
+        }
     }
 
     @Override
@@ -308,7 +314,10 @@ public abstract class BaseCommands implements CommandsInterface {
 
     @Override
     public void unSetOnNewGsmBroadcastSms(Handler h) {
-        mGsmBroadcastSmsRegistrant.clear();
+        if (mGsmBroadcastSmsRegistrant != null && mGsmBroadcastSmsRegistrant.getHandler() == h) {
+            mGsmBroadcastSmsRegistrant.clear();
+            mGsmBroadcastSmsRegistrant = null;
+        }
     }
 
     @Override
@@ -318,7 +327,10 @@ public abstract class BaseCommands implements CommandsInterface {
 
     @Override
     public void unSetOnSmsOnSim(Handler h) {
-        mSmsOnSimRegistrant.clear();
+        if (mSmsOnSimRegistrant != null && mSmsOnSimRegistrant.getHandler() == h) {
+            mSmsOnSimRegistrant.clear();
+            mSmsOnSimRegistrant = null;
+        }
     }
 
     @Override
@@ -328,7 +340,10 @@ public abstract class BaseCommands implements CommandsInterface {
 
     @Override
     public void unSetOnSmsStatus(Handler h) {
-        mSmsStatusRegistrant.clear();
+        if (mSmsStatusRegistrant != null && mSmsStatusRegistrant.getHandler() == h) {
+            mSmsStatusRegistrant.clear();
+            mSmsStatusRegistrant = null;
+        }
     }
 
     @Override
@@ -338,7 +353,10 @@ public abstract class BaseCommands implements CommandsInterface {
 
     @Override
     public void unSetOnSignalStrengthUpdate(Handler h) {
-        mSignalStrengthRegistrant.clear();
+        if (mSignalStrengthRegistrant != null && mSignalStrengthRegistrant.getHandler() == h) {
+            mSignalStrengthRegistrant.clear();
+            mSignalStrengthRegistrant = null;
+        }
     }
 
     @Override
@@ -348,7 +366,10 @@ public abstract class BaseCommands implements CommandsInterface {
 
     @Override
     public void unSetOnNITZTime(Handler h) {
-        mNITZTimeRegistrant.clear();
+        if (mNITZTimeRegistrant != null && mNITZTimeRegistrant.getHandler() == h) {
+            mNITZTimeRegistrant.clear();
+            mNITZTimeRegistrant = null;
+        }
     }
 
     @Override
@@ -358,7 +379,10 @@ public abstract class BaseCommands implements CommandsInterface {
 
     @Override
     public void unSetOnUSSD(Handler h) {
-        mUSSDRegistrant.clear();
+        if (mUSSDRegistrant != null && mUSSDRegistrant.getHandler() == h) {
+            mUSSDRegistrant.clear();
+            mUSSDRegistrant = null;
+        }
     }
 
     @Override
@@ -368,7 +392,10 @@ public abstract class BaseCommands implements CommandsInterface {
 
     @Override
     public void unSetOnSuppServiceNotification(Handler h) {
-        mSsnRegistrant.clear();
+        if (mSsnRegistrant != null && mSsnRegistrant.getHandler() == h) {
+            mSsnRegistrant.clear();
+            mSsnRegistrant = null;
+        }
     }
 
     @Override
@@ -378,7 +405,10 @@ public abstract class BaseCommands implements CommandsInterface {
 
     @Override
     public void unSetOnCatSessionEnd(Handler h) {
-        mCatSessionEndRegistrant.clear();
+        if (mCatSessionEndRegistrant != null && mCatSessionEndRegistrant.getHandler() == h) {
+            mCatSessionEndRegistrant.clear();
+            mCatSessionEndRegistrant = null;
+        }
     }
 
     @Override
@@ -388,7 +418,10 @@ public abstract class BaseCommands implements CommandsInterface {
 
     @Override
     public void unSetOnCatProactiveCmd(Handler h) {
-        mCatProCmdRegistrant.clear();
+        if (mCatProCmdRegistrant != null && mCatProCmdRegistrant.getHandler() == h) {
+            mCatProCmdRegistrant.clear();
+            mCatProCmdRegistrant = null;
+        }
     }
 
     @Override
@@ -398,7 +431,10 @@ public abstract class BaseCommands implements CommandsInterface {
 
     @Override
     public void unSetOnCatEvent(Handler h) {
-        mCatEventRegistrant.clear();
+        if (mCatEventRegistrant != null && mCatEventRegistrant.getHandler() == h) {
+            mCatEventRegistrant.clear();
+            mCatEventRegistrant = null;
+        }
     }
 
     @Override
@@ -408,16 +444,10 @@ public abstract class BaseCommands implements CommandsInterface {
 
     @Override
     public void unSetOnCatCallSetUp(Handler h) {
-        mCatCallSetUpRegistrant.clear();
-    }
-
-    // For Samsung STK
-    public void setOnCatSendSmsResult(Handler h, int what, Object obj) {
-        mCatSendSmsResultRegistrant = new Registrant(h, what, obj);
-    }
-
-    public void unSetOnCatSendSmsResult(Handler h) {
-        mCatSendSmsResultRegistrant.clear();
+        if (mCatCallSetUpRegistrant != null && mCatCallSetUpRegistrant.getHandler() == h) {
+            mCatCallSetUpRegistrant.clear();
+            mCatCallSetUpRegistrant = null;
+        }
     }
 
     @Override
@@ -427,7 +457,10 @@ public abstract class BaseCommands implements CommandsInterface {
 
     @Override
     public void unSetOnIccSmsFull(Handler h) {
-        mIccSmsFullRegistrant.clear();
+        if (mIccSmsFullRegistrant != null && mIccSmsFullRegistrant.getHandler() == h) {
+            mIccSmsFullRegistrant.clear();
+            mIccSmsFullRegistrant = null;
+        }
     }
 
     @Override
@@ -461,7 +494,10 @@ public abstract class BaseCommands implements CommandsInterface {
 
     @Override
     public void unSetOnCallRing(Handler h) {
-        mRingRegistrant.clear();
+        if (mRingRegistrant != null && mRingRegistrant.getHandler() == h) {
+            mRingRegistrant.clear();
+            mRingRegistrant = null;
+        }
     }
 
     @Override
@@ -513,7 +549,10 @@ public abstract class BaseCommands implements CommandsInterface {
 
     @Override
     public void unSetOnRestrictedStateChanged(Handler h) {
-        mRestrictedStateRegistrant.clear();
+        if (mRestrictedStateRegistrant != null && mRestrictedStateRegistrant.getHandler() != h) {
+            mRestrictedStateRegistrant.clear();
+            mRestrictedStateRegistrant = null;
+        }
     }
 
     @Override
@@ -549,7 +588,10 @@ public abstract class BaseCommands implements CommandsInterface {
     }
 
     public void unSetOnUnsolOemHookRaw(Handler h) {
-        mUnsolOemHookRawRegistrant.clear();
+        if (mUnsolOemHookRawRegistrant != null && mUnsolOemHookRawRegistrant.getHandler() == h) {
+            mUnsolOemHookRawRegistrant.clear();
+            mUnsolOemHookRawRegistrant = null;
+        }
     }
 
     @Override
@@ -678,6 +720,17 @@ public abstract class BaseCommands implements CommandsInterface {
         mExitEmergencyCallbackModeRegistrants.remove(h);
     }
 
+    @Override
+    public void registerForHardwareConfigChanged(Handler h, int what, Object obj) {
+        Registrant r = new Registrant (h, what, obj);
+        mHardwareConfigChangeRegistrants.add(r);
+    }
+
+    @Override
+    public void unregisterForHardwareConfigChanged(Handler h) {
+        mHardwareConfigChangeRegistrants.remove(h);
+    }
+
     /**
      * {@inheritDoc}
      */
@@ -704,43 +757,28 @@ public abstract class BaseCommands implements CommandsInterface {
         mSubscriptionStatusRegistrants.remove(h);
     }
 
-    public void registerForCdmaFwdBurstDtmf(Handler h, int what, Object obj) {
-        mCdmaFwdBurstDtmfRegistrants.addUnique(h, what, obj);
+    public void registerForWwanIwlanCoexistence(Handler h, int what, Object obj) {
+        mWwanIwlanCoexistenceRegistrants.addUnique(h, what, obj);
     }
 
-    public void unregisterForCdmaFwdBurstDtmf(Handler h) {
-        mCdmaFwdBurstDtmfRegistrants.remove(h);
+    public void unregisterForWwanIwlanCoexistence(Handler h) {
+        mWwanIwlanCoexistenceRegistrants.remove(h);
     }
 
-    public void registerForCdmaFwdContDtmfStart(Handler h, int what, Object obj) {
-        mCdmaFwdContDtmfStartRegistrants.addUnique(h, what, obj);
+    public void registerForSimRefreshEvent(Handler h, int what, Object obj) {
+        mSimRefreshRegistrants.addUnique(h, what, obj);
     }
 
-    public void unregisterForCdmaFwdContDtmfStart(Handler h) {
-        mCdmaFwdContDtmfStartRegistrants.remove(h);
+    public void unregisterForSimRefreshEvent(Handler h) {
+        mSimRefreshRegistrants.remove(h);
     }
 
-    public void registerForCdmaFwdContDtmfStop(Handler h, int what, Object obj) {
-        mCdmaFwdContDtmfStopRegistrants.addUnique(h, what, obj);
+    public void registerForModemCapEvent(Handler h, int what, Object obj) {
+        mModemCapRegistrants.addUnique(h, what, obj);
     }
 
-    public void unregisterForCdmaFwdContDtmfStop(Handler h) {
-        mCdmaFwdContDtmfStopRegistrants.remove(h);
-    }
-
-    public void registerForWmsReadyEvent(Handler h, int what, Object obj) {
-        mWmsReadyRegistrants.addUnique(h, what, obj);
-    }
-
-    public void unregisterForWmsReadyEvent(Handler h) {
-        mWmsReadyRegistrants.remove(h);
-    }
-
-    /**
-     * {@inheritDoc}
-     */
-    @Override
-    public void setCurrentPreferredNetworkType() {
+    public void unregisterForModemCapEvent(Handler h) {
+        mModemCapRegistrants.remove(h);
     }
 
     @Override
@@ -799,16 +837,10 @@ public abstract class BaseCommands implements CommandsInterface {
     protected void onRadioAvailable() {
     }
 
-    public void setTuneAway(boolean tuneAway, Message response) {
+    public void getModemCapability(Message response) {
     }
 
-    public void setPrioritySub(int subIndex, Message response) {
-    }
-
-    public void setDefaultVoiceSub(int subIndex, Message response) {
-    }
-
-    public void setLocalCallHold(int lchStatus, Message response) {
+    public void updateStackBinding(int stackId, int enable, Message response) {
     }
 
     /**
@@ -833,6 +865,18 @@ public abstract class BaseCommands implements CommandsInterface {
     }
 
     @Override
+    public void registerForSrvccStateChanged(Handler h, int what, Object obj) {
+        Registrant r = new Registrant (h, what, obj);
+
+        mSrvccStateRegistrants.add(r);
+    }
+
+    @Override
+    public void unregisterForSrvccStateChanged(Handler h) {
+        mSrvccStateRegistrants.remove(h);
+    }
+
+    @Override
     public void testingEmergencyCall() {}
 
     @Override
@@ -844,14 +888,33 @@ public abstract class BaseCommands implements CommandsInterface {
             Message response) {
     }
 
-    public void setDataSubscription(Message response) {
+    public void setDataProfile(DataProfile[] dps, Message result) {
     }
 
-    /**
-     * @hide
-     */
+    public void setDataAllowed(boolean allowed, Message response) {
+    }
+
     @Override
-    public int getLteOnGsmMode() {
-        return TelephonyManager.getLteOnGsmModeStatic();
+    public void requestShutdown(Message result) {
+    }
+
+    @Override
+    public void iccOpenLogicalChannel(String AID, Message response) {}
+
+    @Override
+    public void iccCloseLogicalChannel(int channel, Message response) {}
+
+    @Override
+    public void iccTransmitApduLogicalChannel(int channel, int cla, int instruction,
+                                              int p1, int p2, int p3, String data,
+                                              Message response) {}
+    @Override
+    public void iccTransmitApduBasicChannel(int cla, int instruction, int p1, int p2,
+                                            int p3, String data, Message response) {}
+
+    @Override
+    public void getAtr(Message response) {}
+
+    public void setLocalCallHold(int lchStatus) {
     }
 }

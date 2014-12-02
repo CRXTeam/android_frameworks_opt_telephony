@@ -1,6 +1,4 @@
 /*
- * Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
- * Not a Contribution.
  * Copyright (C) 2008 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,7 +16,7 @@
 
 package com.android.internal.telephony.cdma;
 
-import android.content.Context;
+import android.content.res.Resources;
 import android.os.Parcel;
 import android.os.SystemProperties;
 import android.telephony.PhoneNumberUtils;
@@ -27,6 +25,8 @@ import android.telephony.SmsCbMessage;
 import android.telephony.cdma.CdmaSmsCbProgramData;
 import android.telephony.Rlog;
 import android.util.Log;
+import android.text.TextUtils;
+import android.content.res.Resources;
 
 import com.android.internal.telephony.GsmAlphabet.TextEncodingDetails;
 import com.android.internal.telephony.PhoneFactory;
@@ -42,6 +42,7 @@ import com.android.internal.telephony.cdma.sms.UserData;
 import com.android.internal.telephony.uicc.IccUtils;
 import com.android.internal.util.BitwiseInputStream;
 import com.android.internal.util.HexDump;
+import com.android.internal.telephony.Sms7BitEncodingTranslator;
 
 import java.io.BufferedOutputStream;
 import java.io.ByteArrayInputStream;
@@ -97,6 +98,15 @@ public class SmsMessage extends SmsMessageBase {
     /** Specifies if a return of an acknowledgment is requested for send SMS */
     private static final int RETURN_NO_ACK  = 0;
     private static final int RETURN_ACK     = 1;
+
+    /**
+     * Supported priority modes for CDMA SMS messages
+     * (See 3GPP2 C.S0015-B, v2.0, table 4.5.9-1)
+     */
+    private static final int PRIORITY_NORMAL        = 0x0;
+    private static final int PRIORITY_INTERACTIVE   = 0x1;
+    private static final int PRIORITY_URGENT        = 0x2;
+    private static final int PRIORITY_EMERGENCY     = 0x3;
 
     private SmsEnvelope mEnvelope;
     private BearerData mBearerData;
@@ -253,7 +263,7 @@ public class SmsMessage extends SmsMessageBase {
 
             // Second byte is the MSG_LEN, length of the message
             // See 3GPP2 C.S0023 3.4.27
-            int size = data[1];
+            int size = data[1] & 0xFF;
 
             // Note: Data may include trailing FF's.  That's OK; message
             // should still parse correctly.
@@ -517,7 +527,15 @@ public class SmsMessage extends SmsMessageBase {
      */
     public static TextEncodingDetails calculateLength(CharSequence messageBody,
             boolean use7bitOnly) {
-        return BearerData.calcTextEncodingDetails(messageBody, use7bitOnly);
+        CharSequence newMsgBody = null;
+        Resources r = Resources.getSystem();
+        if (r.getBoolean(com.android.internal.R.bool.config_sms_force_7bit_encoding)) {
+            newMsgBody  = Sms7BitEncodingTranslator.translate(messageBody);
+        }
+        if (TextUtils.isEmpty(newMsgBody)) {
+            newMsgBody = messageBody;
+        }
+        return BearerData.calcTextEncodingDetails(newMsgBody, use7bitOnly);
     }
 
     /**
@@ -790,7 +808,6 @@ public class SmsMessage extends SmsMessageBase {
             mMessageBody = mBearerData.userData.payloadStr;
         }
 
-        // Add + for international numbers if + is not existing
         if (mOriginatingAddress != null) {
             mOriginatingAddress.address = new String(mOriginatingAddress.origBytes);
             if (mOriginatingAddress.ton == CdmaSmsAddress.TON_INTERNATIONAL_OR_IP) {
@@ -842,7 +859,7 @@ public class SmsMessage extends SmsMessageBase {
     /**
      * Parses a broadcast SMS, possibly containing a CMAS alert.
      */
-    public SmsCbMessage parseBroadcastSms() {
+    SmsCbMessage parseBroadcastSms() {
         BearerData bData = BearerData.decode(mEnvelope.bearerData, mEnvelope.serviceCategory);
         if (bData == null) {
             Rlog.w(LOG_TAG, "BearerData.decode() returned null");
@@ -941,7 +958,7 @@ public class SmsMessage extends SmsMessageBase {
         bearerData.userAckReq = false;
         bearerData.readAckReq = false;
         bearerData.reportReq = false;
-        if (priority != -1) {
+        if (priority >= PRIORITY_NORMAL && priority <= PRIORITY_EMERGENCY) {
             bearerData.priorityIndicatorSet = true;
             bearerData.priority = priority;
         }
@@ -958,12 +975,14 @@ public class SmsMessage extends SmsMessageBase {
         int teleservice = bearerData.hasUserDataHeader ?
                 SmsEnvelope.TELESERVICE_WEMT : SmsEnvelope.TELESERVICE_WMT;
 
-        Context context = PhoneFactory.getContext();
-        boolean ascii7bitForLongMsg = context.getResources().
-            getBoolean(com.android.internal.R.bool.config_ascii_7bit_support_for_long_message);
-        if (ascii7bitForLongMsg) {
-            Rlog.d(LOG_TAG, "ascii7bitForLongMsg = " + ascii7bitForLongMsg);
-            teleservice = SmsEnvelope.TELESERVICE_WMT;
+        Resources resource = Resources.getSystem();
+        if (resource != null) {
+            boolean ascii7bitForLongMsg = resource.
+                getBoolean(com.android.internal.R.bool.config_ascii_7bit_support_for_long_message);
+            if (ascii7bitForLongMsg) {
+                Rlog.d(LOG_TAG, "ascii7bitForLongMsg = " + ascii7bitForLongMsg);
+                teleservice = SmsEnvelope.TELESERVICE_WMT;
+            }
         }
         SmsEnvelope envelope = new SmsEnvelope();
         envelope.messageType = SmsEnvelope.MESSAGE_TYPE_POINT_TO_POINT;
@@ -1105,6 +1124,7 @@ public class SmsMessage extends SmsMessageBase {
     /* package */ byte[] getIncomingSmsFingerprint() {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
 
+        output.write(mEnvelope.serviceCategory);
         output.write(mEnvelope.teleService);
         output.write(mEnvelope.origAddress.origBytes, 0, mEnvelope.origAddress.origBytes.length);
         output.write(mEnvelope.bearerData, 0, mEnvelope.bearerData.length);
@@ -1168,7 +1188,9 @@ public class SmsMessage extends SmsMessageBase {
             }
             sms.mBearerData.userData.numFields = inStream.read(8);
             consumedBits += 8;
-            int dataBits = subParamLen - consumedBits;
+            int remainingBits = subParamLen - consumedBits;
+            int dataBits = sms.mBearerData.userData.numFields * 8;
+            dataBits = dataBits < remainingBits ? dataBits : remainingBits;
             sms.mBearerData.userData.payload = inStream.readByteArray(dataBits);
             sms.mUserData = sms.mBearerData.userData.payload;
             decodeSuccess = true;

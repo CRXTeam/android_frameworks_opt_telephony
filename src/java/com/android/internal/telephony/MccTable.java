@@ -24,13 +24,14 @@ import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.RemoteException;
 import android.os.SystemProperties;
-import android.telephony.MSimTelephonyManager;
 import android.telephony.TelephonyManager;
 import android.text.TextUtils;
 import android.util.Slog;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 import java.util.Locale;
 import libcore.icu.TimeZoneNames;
 
@@ -177,17 +178,17 @@ public final class MccTable
      */
     public static void updateMccMncConfiguration(Context context, String mccmnc,
             boolean fromServiceState) {
+        Slog.d(LOG_TAG, "updateMccMncConfiguration mccmnc='" + mccmnc + "' fromServiceState=" + fromServiceState);
         if (!TextUtils.isEmpty(mccmnc)) {
             int mcc, mnc;
 
-            if (MSimTelephonyManager.getDefault().isMultiSimEnabled()) {
-                String defaultMccMnc = TelephonyManager.getDefault().getSimOperator();
-                //Update mccmnc only for default subscription in case of MultiSim.
-                if (!defaultMccMnc.equals(mccmnc)) {
-                    Slog.d(LOG_TAG, "Not a Default subscription, ignoring mccmnc config update.");
-                    return;
-                }
-            }
+            String defaultMccMnc = TelephonyManager.getDefault().getSimOperator();
+            Slog.d(LOG_TAG, "updateMccMncConfiguration defaultMccMnc=" + defaultMccMnc);
+            //Update mccmnc only for default subscription in case of MultiSim.
+//            if (!defaultMccMnc.equals(mccmnc)) {
+//                Slog.d(LOG_TAG, "Not a Default subscription, ignoring mccmnc config update.");
+//                return;
+//            }
 
             try {
                 mcc = Integer.parseInt(mccmnc.substring(0,3));
@@ -246,64 +247,81 @@ public final class MccTable
      * @param country Two character country code desired
      *
      * @return Locale or null if no appropriate value
-     *  {@hide}
      */
     public static Locale getLocaleForLanguageCountry(Context context, String language,
             String country) {
-        String l = SystemProperties.get("persist.sys.language");
-        String c = SystemProperties.get("persist.sys.country");
-
-        if (null == language) {
+        if (language == null) {
             Slog.d(LOG_TAG, "getLocaleForLanguageCountry: skipping no language");
             return null; // no match possible
         }
-        language = language.toLowerCase(Locale.ROOT);
-        if (null == country) {
-            country = "";
+        if (country == null) {
+            country = ""; // The Locale constructor throws if passed null.
         }
-        country = country.toUpperCase(Locale.ROOT);
 
-        Locale locale;
+        // Note: persist.always.persist.locale actually means the opposite!
         boolean alwaysPersist = false;
         if (Build.IS_DEBUGGABLE) {
             alwaysPersist = SystemProperties.getBoolean("persist.always.persist.locale", false);
         }
-        if (alwaysPersist || ((null == l || 0 == l.length()) && (null == c || 0 == c.length()))) {
-            try {
-                // try to find a good match
-                String[] locales = context.getAssets().getLocales();
-                final int N = locales.length;
-                String bestMatch = null;
-                for(int i = 0; i < N; i++) {
-                    // only match full (lang + country) locales
-                    if (locales[i]!=null && locales[i].length() >= 5 &&
-                            locales[i].substring(0,2).equals(language)) {
-                        if (locales[i].substring(3,5).equals(country)) {
-                            bestMatch = locales[i];
-                            break;
-                        } else if (null == bestMatch) {
-                            bestMatch = locales[i];
-                        }
+        String persistSysLanguage = SystemProperties.get("persist.sys.language", "");
+        String persistSysCountry = SystemProperties.get("persist.sys.country", "");
+        if (!(alwaysPersist || (persistSysLanguage.isEmpty() && persistSysCountry.isEmpty()))) {
+            Slog.d(LOG_TAG, "getLocaleForLanguageCountry: skipping already persisted");
+            return null;
+        }
+
+        // Find the best match we actually have a localization for.
+        // TODO: this should really follow the CLDR chain of parent locales!
+        final Locale target = new Locale(language, country);
+        try {
+            String[] localeArray = context.getAssets().getLocales();
+            List<String> locales = new ArrayList<>(Arrays.asList(localeArray));
+
+            // Even in developer mode, you don't want the pseudolocales.
+            locales.remove("ar-XB");
+            locales.remove("en-XA");
+
+            Locale firstMatch = null;
+            for (String locale : locales) {
+                final Locale l = Locale.forLanguageTag(locale.replace('_', '-'));
+
+                // Only consider locales with both language and country.
+                if (l == null || "und".equals(l.getLanguage()) ||
+                        l.getLanguage().isEmpty() || l.getCountry().isEmpty()) {
+                    continue;
+                }
+                if (l.getLanguage().equals(target.getLanguage())) {
+                    // If we got a perfect match, we're done.
+                    if (l.getCountry().equals(target.getCountry())) {
+                        Slog.d(LOG_TAG, "getLocaleForLanguageCountry: got perfect match: " +
+                               l.toLanguageTag());
+                        return l;
+                    }
+                    // Otherwise somewhat arbitrarily take the first locale for the language,
+                    // unless we get a perfect match later. Note that these come back in no
+                    // particular order, so there's no reason to think the first match is
+                    // a particularly good match.
+                    if (firstMatch == null) {
+                        firstMatch = l;
                     }
                 }
-                if (null != bestMatch) {
-                    locale = new Locale(bestMatch.substring(0,2),
-                                               bestMatch.substring(3,5));
-                    Slog.d(LOG_TAG, "getLocaleForLanguageCountry: got match");
-                } else {
-                    locale = null;
-                    Slog.d(LOG_TAG, "getLocaleForLanguageCountry: skip no match");
-                }
-            } catch (Exception e) {
-                locale = null;
-                Slog.d(LOG_TAG, "getLocaleForLanguageCountry: exception", e);
             }
-        } else {
-            locale = null;
-            Slog.d(LOG_TAG, "getLocaleForLanguageCountry: skipping already persisted");
+
+            // We didn't find the exact locale, so return whichever locale we saw first where
+            // the language matched (if any).
+            if (firstMatch != null) {
+                Slog.d(LOG_TAG, "getLocaleForLanguageCountry: got a language-only match: " +
+                       firstMatch.toLanguageTag());
+                return firstMatch;
+            } else {
+                Slog.d(LOG_TAG, "getLocaleForLanguageCountry: no locales for language " +
+                       language);
+            }
+        } catch (Exception e) {
+            Slog.d(LOG_TAG, "getLocaleForLanguageCountry: exception", e);
         }
-        Slog.d(LOG_TAG, "getLocaleForLanguageCountry: X locale=" + locale);
-        return locale;
+
+        return null;
     }
 
     /**
@@ -319,6 +337,7 @@ public final class MccTable
         if (locale != null) {
             Configuration config = new Configuration();
             config.setLocale(locale);
+            config.userSetLocale = false;
             Slog.d(LOG_TAG, "setSystemLocale: updateLocale config=" + config);
             try {
                 ActivityManagerNative.getDefault().updateConfiguration(config);
@@ -405,9 +424,9 @@ public final class MccTable
 		sTable.add(new MccEntry(212,"mc",2));	//Monaco (Principality of)
 		sTable.add(new MccEntry(213,"ad",2));	//Andorra (Principality of)
 		sTable.add(new MccEntry(214,"es",2,"es"));	//Spain
-		sTable.add(new MccEntry(216,"hu",2));	//Hungary (Republic of)
+		sTable.add(new MccEntry(216,"hu",2,"hu"));	//Hungary (Republic of)
 		sTable.add(new MccEntry(218,"ba",2));	//Bosnia and Herzegovina
-		sTable.add(new MccEntry(219,"hr",2));	//Croatia (Republic of)
+		sTable.add(new MccEntry(219,"hr",2,"hr"));	//Croatia (Republic of)
 		sTable.add(new MccEntry(220,"rs",2));	//Serbia and Montenegro
 		sTable.add(new MccEntry(222,"it",2,"it"));	//Italy
 		sTable.add(new MccEntry(225,"va",2,"it"));	//Vatican City State
@@ -557,6 +576,8 @@ public final class MccTable
 		sTable.add(new MccEntry(550,"fm",2));	//Micronesia (Federated States of)
 		sTable.add(new MccEntry(551,"mh",2));	//Marshall Islands (Republic of the)
 		sTable.add(new MccEntry(552,"pw",2));	//Palau (Republic of)
+		sTable.add(new MccEntry(553,"tv",2));	//Tuvalu
+		sTable.add(new MccEntry(555,"nu",2));	//Niue
 		sTable.add(new MccEntry(602,"eg",2));	//Egypt (Arab Republic of)
 		sTable.add(new MccEntry(603,"dz",2));	//Algeria (People's Democratic Republic of)
 		sTable.add(new MccEntry(604,"ma",2));	//Morocco (Kingdom of)
@@ -585,7 +606,7 @@ public final class MccTable
 		sTable.add(new MccEntry(627,"gq",2));	//Equatorial Guinea (Republic of)
 		sTable.add(new MccEntry(628,"ga",2));	//Gabonese Republic
 		sTable.add(new MccEntry(629,"cg",2));	//Congo (Republic of the)
-		sTable.add(new MccEntry(630,"cg",2));	//Democratic Republic of the Congo
+		sTable.add(new MccEntry(630,"cd",2));	//Democratic Republic of the Congo
 		sTable.add(new MccEntry(631,"ao",2));	//Angola (Republic of)
 		sTable.add(new MccEntry(632,"gw",2));	//Guinea-Bissau (Republic of)
 		sTable.add(new MccEntry(633,"sc",2));	//Seychelles (Republic of)
@@ -611,6 +632,7 @@ public final class MccTable
 		sTable.add(new MccEntry(654,"km",2));	//Comoros (Union of the)
 		sTable.add(new MccEntry(655,"za",2,"en"));	//South Africa (Republic of)
 		sTable.add(new MccEntry(657,"er",2));	//Eritrea
+		sTable.add(new MccEntry(659,"ss",2));	//South Sudan (Republic of)
 		sTable.add(new MccEntry(702,"bz",2));	//Belize
 		sTable.add(new MccEntry(704,"gt",2));	//Guatemala (Republic of)
 		sTable.add(new MccEntry(706,"sv",2));	//El Salvador (Republic of)

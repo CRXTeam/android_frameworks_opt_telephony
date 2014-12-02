@@ -223,16 +223,6 @@ public interface IccCard {
     public boolean hasIccCard();
 
     /**
-     * @return No. of Attempts remaining to unlock PIN1/PUK1
-    */
-    public int getIccPin1RetryCount();
-
-    /**
-     * @return No. of Attempts remaining to unlock PIN2/PUK2
-     */
-    public int getIccPin2RetryCount();
-
-    /**
      * @return true if ICC card is PIN2 blocked
      */
     public boolean getIccPin2Blocked();

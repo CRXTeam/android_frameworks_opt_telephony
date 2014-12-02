@@ -42,6 +42,10 @@ public class CommandException extends RuntimeException {
         MODE_NOT_SUPPORTED,
         FDN_CHECK_FAILURE,
         ILLEGAL_SIM_OR_ME,
+        MISSING_RESOURCE,
+        NO_SUCH_ELEMENT,
+        INVALID_PARAMETER,
+        SUBSCRIPTION_NOT_SUPPORTED,
         DIAL_MODIFIED_TO_USSD,
         DIAL_MODIFIED_TO_SS,
         DIAL_MODIFIED_TO_DIAL,
@@ -51,7 +55,6 @@ public class CommandException extends RuntimeException {
         SS_MODIFIED_TO_DIAL,
         SS_MODIFIED_TO_USSD,
         SS_MODIFIED_TO_SS,
-        SUBSCRIPTION_NOT_SUPPORTED,
     }
 
     public CommandException(Error e) {
@@ -93,6 +96,14 @@ public class CommandException extends RuntimeException {
                 return new CommandException(Error.FDN_CHECK_FAILURE);
             case RILConstants.ILLEGAL_SIM_OR_ME:
                 return new CommandException(Error.ILLEGAL_SIM_OR_ME);
+            case RILConstants.MISSING_RESOURCE:
+                return new CommandException(Error.MISSING_RESOURCE);
+            case RILConstants.NO_SUCH_ELEMENT:
+                return new CommandException(Error.NO_SUCH_ELEMENT);
+            case RILConstants.INVALID_PARAMETER:
+                 return new CommandException(Error.INVALID_PARAMETER);
+            case RILConstants.SUBSCRIPTION_NOT_SUPPORTED:
+                return new CommandException(Error.SUBSCRIPTION_NOT_SUPPORTED);
             case RILConstants.DIAL_MODIFIED_TO_USSD:
                 return new CommandException(Error.DIAL_MODIFIED_TO_USSD);
             case RILConstants.DIAL_MODIFIED_TO_SS:
@@ -111,8 +122,6 @@ public class CommandException extends RuntimeException {
                 return new CommandException(Error.SS_MODIFIED_TO_USSD);
             case RILConstants.SS_MODIFIED_TO_SS:
                 return new CommandException(Error.SS_MODIFIED_TO_SS);
-            case RILConstants.SUBSCRIPTION_NOT_SUPPORTED:
-                return new CommandException(Error.SUBSCRIPTION_NOT_SUPPORTED);
             default:
                 Rlog.e("GSM", "Unrecognized RIL errno " + ril_errno);
                 return new CommandException(Error.INVALID_RESPONSE);

@@ -16,7 +16,6 @@
 
 package com.android.internal.telephony.cat;
 
-import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.os.Handler;
 import android.os.Message;
@@ -36,17 +35,19 @@ import static com.android.internal.telephony.cat.CatCmdMessage.
                    SetupEventListConstants.BROWSER_TERMINATION_EVENT;
 import static com.android.internal.telephony.cat.CatCmdMessage.
                    SetupEventListConstants.BROWSING_STATUS_EVENT;
+import static com.android.internal.telephony.cat.CatCmdMessage.
+                   SetupEventListConstants.HCI_CONNECTIVITY_EVENT;
 /**
  * Factory class, used for decoding raw byte arrays, received from baseband,
  * into a CommandParams object.
  *
  */
-public class CommandParamsFactory extends Handler {
+class CommandParamsFactory extends Handler {
     private static CommandParamsFactory sInstance = null;
-    protected IconLoader mIconLoader;
+    private IconLoader mIconLoader;
     private CommandParams mCmdParams = null;
     private int mIconLoadState = LOAD_NO_ICON;
-    protected RilMessageDecoder mCaller = null;
+    private RilMessageDecoder mCaller = null;
     private boolean mloadIcon = false;
 
     // constants
@@ -91,9 +92,6 @@ public class CommandParamsFactory extends Handler {
     private CommandParamsFactory(RilMessageDecoder caller, IccFileHandler fh) {
         mCaller = caller;
         mIconLoader = IconLoader.getInstance(this, fh);
-    }
-
-    protected CommandParamsFactory() {
     }
 
     private CommandDetails processCommandDetails(List<ComprehensionTlv> ctlvs) {
@@ -206,6 +204,9 @@ public class CommandParamsFactory extends Handler {
              case SEND_DATA:
                  cmdPending = processBIPClient(cmdDet, ctlvs);
                  break;
+            case ACTIVATE:
+                cmdPending = processActivate(cmdDet, ctlvs);
+                break;
             default:
                 // unsupported proactive commands
                 mCmdParams = new CommandParams(cmdDet);
@@ -687,47 +688,7 @@ public class CommandParamsFactory extends Handler {
         }
 
         textMsg.responseNeeded = false;
-        // Samsung STK
-        AppInterface.CommandType cmdType = AppInterface.CommandType.fromInt(cmdDet.typeOfCommand);
-        boolean isSamsungStk = Resources.getSystem().getBoolean(com.android.internal.R.bool.config_samsung_stk);
-        if (cmdType == AppInterface.CommandType.SEND_SMS && isSamsungStk) {
-            String smscAddress = null;
-            String pdu = null;
-
-            ctlv = searchForTag(ComprehensionTlvTag.ADDRESS, ctlvs);
-            if (ctlv != null) {
-                smscAddress = ValueParser.retrieveSMSCaddress(ctlv);
-                CatLog.d(this, "The smsc address is " + smscAddress);
-            }
-            else {
-                CatLog.d(this, "The smsc address is null");
-            }
-
-            ctlv = searchForTag(ComprehensionTlvTag.SMS_TPDU, ctlvs);
-            if (ctlv != null) {
-                pdu = ValueParser.retrieveSMSTPDU(ctlv);
-                CatLog.d(this, "The SMS tpdu is " + pdu);
-            }
-            else {
-                CatLog.d(this, "The SMS tpdu is null");
-            }
-            mCmdParams = new SendSMSParams(cmdDet, textMsg, smscAddress, pdu);
-        }
-        else if (cmdType == AppInterface.CommandType.SEND_USSD && isSamsungStk) {
-            String ussdString = null;
-            ctlv = searchForTag(ComprehensionTlvTag.USSD_STRING, ctlvs);
-            if (ctlv != null) {
-                ussdString = ValueParser.retrieveUSSDString(ctlv);
-                CatLog.d(this, "The ussd string is " + ussdString);
-            }
-            else {
-                CatLog.d(this, "The ussd string is null");
-            }
-            mCmdParams = new SendUSSDParams(cmdDet, textMsg, ussdString);
-        }
-        else {
-            mCmdParams = new DisplayTextParams(cmdDet, textMsg);
-        }
+        mCmdParams = new DisplayTextParams(cmdDet, textMsg);
 
         if (iconId != null) {
             mloadIcon = true;
@@ -773,6 +734,7 @@ public class CommandParamsFactory extends Handler {
                         case LANGUAGE_SELECTION_EVENT:
                         case BROWSER_TERMINATION_EVENT:
                         case BROWSING_STATUS_EVENT:
+                        case HCI_CONNECTIVITY_EVENT:
                             eventList[i] = eventValue;
                             i++;
                             break;
@@ -1049,6 +1011,27 @@ public class CommandParamsFactory extends Handler {
             mIconLoadState = LOAD_SINGLE_ICON;
             mIconLoader.loadIcon(iconId.recordNumber, obtainMessage(MSG_ID_LOAD_ICON_DONE));
             return true;
+        }
+        return false;
+    }
+
+    private boolean processActivate(CommandDetails cmdDet,
+                                     List<ComprehensionTlv> ctlvs) throws ResultException {
+        AppInterface.CommandType commandType =
+                AppInterface.CommandType.fromInt(cmdDet.typeOfCommand);
+        CatLog.d(this, "process " + commandType.name());
+
+        ComprehensionTlv ctlv = null;
+        int target;
+
+        //parse activate descriptor
+        ctlv = searchForTag(ComprehensionTlvTag.ACTIVATE_DESCRIPTOR, ctlvs);
+        if (ctlv != null) {
+            target = ValueParser.retrieveTarget(ctlv);
+            mCmdParams = new CommandParams(cmdDet);
+            CatLog.d(this, "Activate cmd target = " + target);
+        } else {
+            CatLog.d(this, "ctlv is null");
         }
         return false;
     }

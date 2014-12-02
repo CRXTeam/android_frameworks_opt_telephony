@@ -1,6 +1,4 @@
 /*
- * Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
- * Not a Contribution.
  * Copyright (C) 2013 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -46,7 +44,7 @@ import java.util.Arrays;
 public class CdmaInboundSmsHandler extends InboundSmsHandler {
 
     private final CdmaSMSDispatcher mSmsDispatcher;
-    protected CdmaServiceCategoryProgramHandler mServiceCategoryProgramHandler;
+    private final CdmaServiceCategoryProgramHandler mServiceCategoryProgramHandler;
 
     private byte[] mLastDispatchedSmsFingerprint;
     private byte[] mLastAcknowledgedSmsFingerprint;
@@ -57,19 +55,14 @@ public class CdmaInboundSmsHandler extends InboundSmsHandler {
     /**
      * Create a new inbound SMS handler for CDMA.
      */
-    protected CdmaInboundSmsHandler(Context context, SmsStorageMonitor storageMonitor,
+    private CdmaInboundSmsHandler(Context context, SmsStorageMonitor storageMonitor,
             PhoneBase phone, CdmaSMSDispatcher smsDispatcher) {
-        super("CdmaInboundSmsHandler", context, storageMonitor, phone, null);
+        super("CdmaInboundSmsHandler", context, storageMonitor, phone,
+                CellBroadcastHandler.makeCellBroadcastHandler(context, phone));
         mSmsDispatcher = smsDispatcher;
-        init(context, phone);
-        mPhone = phone;
-        phone.mCi.setOnNewCdmaSms(getHandler(), EVENT_NEW_SMS, null);
-    }
-
-    protected void init(Context context, PhoneBase phone) {
-        mCellBroadcastHandler = CellBroadcastHandler.makeCellBroadcastHandler(context);
         mServiceCategoryProgramHandler = CdmaServiceCategoryProgramHandler.makeScpHandler(context,
                 phone.mCi);
+        phone.mCi.setOnNewCdmaSms(getHandler(), EVENT_NEW_SMS, null);
     }
 
     /**
@@ -238,7 +231,6 @@ public class CdmaInboundSmsHandler extends InboundSmsHandler {
     protected void onUpdatePhoneObject(PhoneBase phone) {
         super.onUpdatePhoneObject(phone);
         mCellBroadcastHandler.updatePhoneObject(phone);
-        mServiceCategoryProgramHandler.updatePhoneObject(phone);
     }
 
     /**
@@ -270,6 +262,7 @@ public class CdmaInboundSmsHandler extends InboundSmsHandler {
         int voicemailCount = sms.getNumOfVoicemails();
         if (DBG) log("Voicemail count=" + voicemailCount);
 
+        mPhone.setVoiceMessageWaiting(1, voicemailCount);
         // range check
         if (voicemailCount < 0) {
             voicemailCount = -1;

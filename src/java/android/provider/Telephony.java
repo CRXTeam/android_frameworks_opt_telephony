@@ -1,6 +1,4 @@
 /*
- * Copyright (c) 2012-2013 The Linux Foundation. All rights reserved.
- * Not a Contribution.
  * Copyright (C) 2006 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -28,13 +26,13 @@ import android.content.Intent;
 import android.database.Cursor;
 import android.database.sqlite.SqliteWrapper;
 import android.net.Uri;
-import android.telephony.MSimSmsManager;
 import android.telephony.SmsMessage;
+import android.telephony.SubscriptionManager;
 import android.text.TextUtils;
 import android.telephony.Rlog;
 import android.util.Patterns;
 
-import com.android.internal.telephony.MSimConstants;
+import com.android.internal.telephony.PhoneConstants;
 import com.android.internal.telephony.SmsApplication;
 
 
@@ -242,17 +240,37 @@ public final class Telephony {
         public static final String LOCKED = "locked";
 
         /**
-         * The sub_id to which the message belongs to
-         * <p>Type: INTEGER</p>
+         * The phone id to which the message belongs to
+         * <p>Type: INTEGER (long) </p>
          * @hide
          */
-        public static final String SUB_ID = "sub_id";
+        public static final String PHONE_ID = "phone_id";
+
+        /**
+         * The MTU size of the mobile interface to which the APN connected
+         * @hide
+         */
+        public static final String MTU = "mtu";
 
         /**
          * Error code associated with sending or receiving this message
          * <P>Type: INTEGER</P>
          */
         public static final String ERROR_CODE = "error_code";
+
+        /**
+         * The identity of the sender of a sent message. It is
+         * usually the package name of the app which sends the message.
+         * <p>Type: TEXT</p>
+         */
+        public static final String CREATOR = "creator";
+
+       /**
+         * The priority of the message.
+         * <P>Type: INTEGER</P>
+         * @hide
+         */
+        public static final String PRIORITY = "priority";
     }
 
     /**
@@ -325,9 +343,8 @@ public final class Telephony {
         public static Uri addMessageToUri(ContentResolver resolver,
                 Uri uri, String address, String body, String subject,
                 Long date, boolean read, boolean deliveryReport) {
-            return addMessageToUri(resolver, uri, address, body, subject,
-                    date, read, deliveryReport, -1L,
-                    MSimSmsManager.getDefault().getPreferredSmsSubscription());
+            return addMessageToUri(SubscriptionManager.getDefaultSmsSubId(),
+                    resolver, uri, address, body, subject, date, read, deliveryReport, -1L);
         }
 
         /**
@@ -345,11 +362,11 @@ public final class Telephony {
          * @return the URI for the new message
          * @hide
          */
-        public static Uri addMessageToUri(ContentResolver resolver,
+        public static Uri addMessageToUri(long subId, ContentResolver resolver,
                 Uri uri, String address, String body, String subject,
-                Long date, boolean read, boolean deliveryReport, int subId) {
-            return addMessageToUri(resolver, uri, address, body, subject,
-                    date, read, deliveryReport, -1L, subId);
+                Long date, boolean read, boolean deliveryReport) {
+            return addMessageToUri(subId, resolver, uri, address, body, subject,
+                    date, read, deliveryReport, -1L);
         }
 
         /**
@@ -370,9 +387,9 @@ public final class Telephony {
         public static Uri addMessageToUri(ContentResolver resolver,
                 Uri uri, String address, String body, String subject,
                 Long date, boolean read, boolean deliveryReport, long threadId) {
-            return addMessageToUri(resolver, uri, address, body, subject,
-                    date, read, deliveryReport, threadId,
-                    MSimSmsManager.getDefault().getPreferredSmsSubscription());
+            return addMessageToUri(SubscriptionManager.getDefaultSmsSubId(),
+                    resolver, uri, address, body, subject,
+                    date, read, deliveryReport, threadId);
         }
 
         /**
@@ -391,11 +408,11 @@ public final class Telephony {
          * @return the URI for the new message
          * @hide
          */
-        public static Uri addMessageToUri(ContentResolver resolver,
+        public static Uri addMessageToUri(long subId, ContentResolver resolver,
                 Uri uri, String address, String body, String subject,
-                Long date, boolean read, boolean deliveryReport, long threadId, int subId) {
-            return addMessageToUri(resolver, uri, address, body, subject,
-                    date, read, deliveryReport, threadId, subId, -1);
+                Long date, boolean read, boolean deliveryReport, long threadId) {
+            return addMessageToUri(subId, resolver, uri, address, body, subject,
+                    date, read, deliveryReport, threadId, -1);
         }
 
         /**
@@ -415,14 +432,15 @@ public final class Telephony {
          * @return the URI for the new message
          * @hide
          */
-        public static Uri addMessageToUri(ContentResolver resolver,
+        public static Uri addMessageToUri(long subId, ContentResolver resolver,
                 Uri uri, String address, String body, String subject,
                 Long date, boolean read, boolean deliveryReport, long threadId,
-                int subId, int priority) {
+                int priority) {
             ContentValues values = new ContentValues(8);
             Rlog.v(TAG,"Telephony addMessageToUri sub id: " + subId);
 
-            values.put(SUB_ID, subId);
+            int phoneId = SubscriptionManager.getPhoneId(subId);
+            values.put(PHONE_ID, phoneId);
             values.put(ADDRESS, address);
             if (date != null) {
                 values.put(DATE, date);
@@ -430,7 +448,7 @@ public final class Telephony {
             values.put(READ, read ? Integer.valueOf(1) : Integer.valueOf(0));
             values.put(SUBJECT, subject);
             values.put(BODY, body);
-            values.put("pri", priority);
+            values.put(PRIORITY, priority);
             if (deliveryReport) {
                 values.put(STATUS, STATUS_PENDING);
             }
@@ -536,9 +554,8 @@ public final class Telephony {
             public static Uri addMessage(ContentResolver resolver,
                     String address, String body, String subject, Long date,
                     boolean read) {
-                return addMessageToUri(resolver, CONTENT_URI, address, body,
-                        subject, date, read, false,
-                        MSimSmsManager.getDefault().getPreferredSmsSubscription());
+                return addMessageToUri(SubscriptionManager.getDefaultSmsSubId(),
+                        resolver, CONTENT_URI, address, body, subject, date, read, false);
             }
 
             /**
@@ -554,11 +571,10 @@ public final class Telephony {
              * @return the URI for the new message
              * @hide
              */
-            public static Uri addMessage(ContentResolver resolver,
-                    String address, String body, String subject, Long date,
-                    boolean read, int subId) {
-                return addMessageToUri(resolver, CONTENT_URI, address, body,
-                        subject, date, read, false, subId);
+            public static Uri addMessage(long subId, ContentResolver resolver,
+                    String address, String body, String subject, Long date, boolean read) {
+                return addMessageToUri(subId, resolver, CONTENT_URI, address, body,
+                        subject, date, read, false);
             }
         }
 
@@ -597,9 +613,8 @@ public final class Telephony {
              */
             public static Uri addMessage(ContentResolver resolver,
                     String address, String body, String subject, Long date) {
-                return addMessageToUri(resolver, CONTENT_URI, address, body,
-                        subject, date, true, false,
-                        MSimSmsManager.getDefault().getPreferredSmsSubscription());
+                return addMessageToUri(SubscriptionManager.getDefaultSmsSubId(),
+                        resolver, CONTENT_URI, address, body, subject, date, true, false);
             }
 
             /**
@@ -614,10 +629,10 @@ public final class Telephony {
              * @return the URI for the new message
              * @hide
              */
-            public static Uri addMessage(ContentResolver resolver,
-                    String address, String body, String subject, Long date, int subId) {
-                return addMessageToUri(resolver, CONTENT_URI, address, body,
-                        subject, date, true, false, subId);
+            public static Uri addMessage(long subId, ContentResolver resolver,
+                    String address, String body, String subject, Long date) {
+                return addMessageToUri(subId, resolver, CONTENT_URI, address, body,
+                        subject, date, true, false);
             }
         }
 
@@ -643,9 +658,8 @@ public final class Telephony {
             */
             public static Uri addMessage(ContentResolver resolver,
                     String address, String body, String subject, Long date) {
-                return addMessageToUri(resolver, CONTENT_URI, address, body,
-                        subject, date, true, false,
-                        MSimSmsManager.getDefault().getPreferredSmsSubscription());
+                return addMessageToUri(SubscriptionManager.getDefaultSmsSubId(),
+                        resolver, CONTENT_URI, address, body, subject, date, true, false);
             }
 
             /**
@@ -660,10 +674,10 @@ public final class Telephony {
              * @return the URI for the new message
              * @hide
              */
-            public static Uri addMessage(ContentResolver resolver,
-                    String address, String body, String subject, Long date, int subId) {
-                return addMessageToUri(resolver, CONTENT_URI, address, body,
-                        subject, date, true, false, subId);
+            public static Uri addMessage(long subId, ContentResolver resolver,
+                    String address, String body, String subject, Long date) {
+                return addMessageToUri(subId, resolver, CONTENT_URI, address, body,
+                        subject, date, true, false);
             }
 
             /**
@@ -709,9 +723,9 @@ public final class Telephony {
             public static Uri addMessage(ContentResolver resolver,
                     String address, String body, String subject, Long date,
                     boolean deliveryReport, long threadId) {
-                return addMessageToUri(resolver, CONTENT_URI, address, body, subject, date,
-                        true, deliveryReport, threadId,
-                        MSimSmsManager.getDefault().getPreferredSmsSubscription());
+                return addMessageToUri(SubscriptionManager.getDefaultSmsSubId(),
+                        resolver, CONTENT_URI, address, body, subject, date,
+                        true, deliveryReport, threadId);
             }
 
             /**
@@ -727,11 +741,11 @@ public final class Telephony {
              * @return the URI for the new message
              * @hide
              */
-            public static Uri addMessage(ContentResolver resolver,
+            public static Uri addMessage(long subId, ContentResolver resolver,
                     String address, String body, String subject, Long date,
-                    boolean deliveryReport, long threadId, int subId) {
-                return addMessageToUri(resolver, CONTENT_URI, address, body,
-                        subject, date, true, deliveryReport, threadId, subId);
+                    boolean deliveryReport, long threadId) {
+                return addMessageToUri(subId, resolver, CONTENT_URI, address, body,
+                        subject, date, true, deliveryReport, threadId);
             }
         }
 
@@ -814,27 +828,6 @@ public final class Telephony {
             public static final int RESULT_SMS_DUPLICATED = 5;
 
             /**
-             * Used internally: The sender of the SMS was blacklisted
-             * for not being listed in the contact list
-             * @hide
-             */
-            public static final int RESULT_SMS_BLACKLISTED_UNKNOWN = 6;
-
-            /**
-             * Used internally: The sender of the SMS was blacklisted
-             * for being listed in the blacklist
-             * @hide
-             */
-            public static final int RESULT_SMS_BLACKLISTED_LIST = 7;
-
-            /**
-             * Used internally: The sender of the SMS was blacklisted
-             * for matching a blacklist regex entry
-             * @hide
-             */
-            public static final int RESULT_SMS_BLACKLISTED_REGEX = 8;
-
-            /**
              * Activity action: Ask the user to change the default
              * SMS application. This will show a dialog that asks the
              * user whether they want to replace the current default
@@ -879,6 +872,39 @@ public final class Telephony {
             @SdkConstant(SdkConstantType.BROADCAST_INTENT_ACTION)
             public static final String SMS_DELIVER_ACTION =
                     "android.provider.Telephony.SMS_DELIVER";
+
+            /**
+             * Broadcast Action: A new text-based SMS message has been received
+             * by the device. This intent will only be delivered to a
+             * carrier app which is responsible for filtering the message.
+             * If the carrier app wants to drop a message, it should set the result
+             * code to {@link android.app.Activity#RESULT_CANCELED}. The carrier app can
+             * also modify the SMS PDU by setting the "pdus" value in result extras.</p>
+             *
+             * The intent will have the following extra values:</p>
+             *
+             * <ul>
+             *   <li><em>"pdus"</em> - An Object[] of byte[]s containing the PDUs
+             *   that make up the message.</li>
+             *   <li><em>"format"</em> - A String describing the format of the PDUs. It can
+             *   be either "3gpp" or "3gpp2".</li>
+             *   <li><em>"destport"</em> - An int describing the destination port of a data
+             *   SMS. It will be -1 for text SMS.</li>
+             * </ul>
+             *
+             * <p>The extra values can be extracted using
+             * {@link #getMessagesFromIntent(Intent)}.</p>
+             *
+             * <p class="note"><strong>Note:</strong>
+             * The broadcast receiver that filters for this intent must be a carrier privileged app.
+             * It must also declare {@link android.Manifest.permission#BROADCAST_SMS} as a required
+             * permission in the <a href="{@docRoot}guide/topics/manifest/receiver-element.html">
+             * {@code &lt;receiver>}</a> tag.
+             * {@hide}
+             */
+            @SdkConstant(SdkConstantType.BROADCAST_INTENT_ACTION)
+            public static final String SMS_FILTER_ACTION =
+                    "android.provider.Telephony.SMS_FILTER";
 
             /**
              * Broadcast Action: A new text-based SMS message has been received
@@ -1075,6 +1101,48 @@ public final class Telephony {
                 "android.provider.Telephony.SMS_REJECTED";
 
             /**
+             * Broadcast Action: A new SMS PDU needs to be sent from
+             * the device. This intent will only be delivered to a
+             * carrier app. That app is responsible for sending the PDU.
+             * The intent will have the following extra values:</p>
+             *
+             * <ul>
+             *   <li><em>"pdu"</em> - (byte[]) The PDU to send.</li>
+             *   <li><em>"smsc"</em> - (byte[]) The service center address (for GSM PDU only).</li>
+             *   <li><em>"format"</em> - (String) The format of the PDU. Either 3gpp or 3gpp2. </li>
+             *   <li><em>"concat.refNumber"</em> - (int) If the SMS is part of a multi-part SMS, the
+             *   ref number used in the SMS header.</li>
+             *   <li><em>"concat.seqNumber"</em> - (int) If the SMS is part of a multi-part SMS, the
+             *   sequence number of this SMS.</li>
+             *   <li><em>"concat.msgCount"</em> - (int) If the SMS is part of a multi-part SMS, the
+             *   total number of SMSes in the multi-part SMS.</li>
+             * </ul>
+             *
+             * <p>If a BroadcastReceiver is trying to send the message,
+             *  it should set the result code to {@link android.app.Activity#RESULT_OK} and set
+             *  the following in the result extra values:</p>
+             *
+             * <ul>
+             *   <li><em>"messageref"</em> - (int) The new message reference number which will be
+             *   later used in the updateSmsSendStatus call.</li>
+             * </ul>
+             *
+             * <p>If a BroadcastReceiver cannot send the message, it should not set the result
+             *  code and the platform will send it via the normal pathway.
+             * </p>
+             *
+             * <p class="note"><strong>Note:</strong>
+             * The broadcast receiver that filters for this intent must be a carrier privileged app.
+             * It must also declare {@link android.Manifest.permission#BROADCAST_SMS} as a required
+             * permission in the <a href="{@docRoot}guide/topics/manifest/receiver-element.html">
+             * {@code &lt;receiver>}</a> tag.
+             * {@hide}
+             */
+            @SdkConstant(SdkConstantType.BROADCAST_INTENT_ACTION)
+            public static final String SMS_SEND_ACTION =
+                "android.provider.Telephony.SMS_SEND";
+
+            /**
              * Read the PDUs out of an {@link #SMS_RECEIVED_ACTION} or a
              * {@link #DATA_SMS_RECEIVED_ACTION} intent.
              *
@@ -1084,7 +1152,8 @@ public final class Telephony {
             public static SmsMessage[] getMessagesFromIntent(Intent intent) {
                 Object[] messages = (Object[]) intent.getSerializableExtra("pdus");
                 String format = intent.getStringExtra("format");
-                int subId = intent.getIntExtra(MSimConstants.SUBSCRIPTION_KEY, 0);
+                long subId = intent.getLongExtra(PhoneConstants.SUBSCRIPTION_KEY,
+                        SubscriptionManager.getDefaultSmsSubId());
 
                 Rlog.v(TAG, " getMessagesFromIntent sub_id : " + subId);
 
@@ -1116,6 +1185,8 @@ public final class Telephony {
         public static final int MESSAGE_BOX_DRAFTS = 3;
         /** Message box: outbox. */
         public static final int MESSAGE_BOX_OUTBOX = 4;
+        /** Message box: failed. */
+        public static final int MESSAGE_BOX_FAILED = 5;
 
         /**
          * The thread ID of the message.
@@ -1654,12 +1725,18 @@ public final class Telephony {
         public static final String LOCKED = "locked";
 
         /**
-         * The sub id to which message belongs to
+         * The phone id to which message belongs to
          * <p>Type: INTEGER</p>
          * @hide
          */
-        public static final String SUB_ID = "sub_id";
+        public static final String PHONE_ID = "phone_id";
 
+        /**
+         * The identity of the sender of a sent message. It is
+         * usually the package name of the app which sends the message.
+         * <p>Type: TEXT</p>
+         */
+        public static final String CREATOR = "creator";
     }
 
     /**
@@ -1736,6 +1813,12 @@ public final class Telephony {
          * <P>Type: INTEGER</P>
          */
         public static final String HAS_ATTACHMENT = "has_attachment";
+
+        /**
+         * If the thread is archived
+         * <P>Type: INTEGER (boolean)</P>
+         */
+        public static final String ARCHIVED = "archived";
     }
 
     /**
@@ -2226,9 +2309,101 @@ public final class Telephony {
                     = "android.intent.action.CONTENT_CHANGED";
 
             /**
+             * Broadcast Action: A new MMS PDU needs to be sent from
+             * the device. This intent will only be delivered to a
+             * carrier app. That app is responsible for sending the PDU.
+             * The intent will have the following extra values:</p>
+             *
+             * <ul>
+             *   <li><em>{@link #EXTRA_MMS_CONTENT_URI}</em> - (Uri) The content provider of the
+             *     PDU to send.</li>
+             *   <li><em>{@link #EXTRA_MMS_LOCATION_URL}</em> - (String) The optional url to send
+             *     this MMS PDU. If this is not specified, PDU should be sent to the default MMSC
+             *     url.</li>
+             * </ul>
+             *
+             * <p>If a BroadcastReceiver is trying to send the message,
+             *  it should set the result code to {@link android.app.Activity#RESULT_OK} and set
+             *  the following in the result extra values:</p>
+             *
+             * <ul>
+             *   <li><em>"messageref"</em> - (int) The new message reference number which will be
+             *   later used in the updateMmsSendStatus call.</li>
+             * </ul>
+             *
+             * <p>If a BroadcastReceiver cannot send the message, it should not set the result
+             *  code and the platform will send it via the normal pathway.
+             * </p>
+             *
+             * <p class="note"><strong>Note:</strong>
+             * The broadcast receiver that filters for this intent must be a carrier privileged app.
+             * It must also declare {@link android.Manifest.permission#BROADCAST_WAP_PUSH} as a required
+             * permission in the <a href="{@docRoot}guide/topics/manifest/receiver-element.html">
+             * {@code &lt;receiver>}</a> tag.
+             * {@hide}
+             */
+            @SdkConstant(SdkConstantType.BROADCAST_INTENT_ACTION)
+            public static final String MMS_SEND_ACTION =
+                    "android.provider.Telephony.MMS_SEND";
+
+            /**
+             * Broadcast Action: A new MMS needs to be downloaded.
+             * This intent will only be delivered to a
+             * carrier app. That app is responsible for downloading the message at the URL.
+             * The intent will have the following extra values:</p>
+             *
+             * <ul>
+             *   <li><em>{@link #EXTRA_MMS_CONTENT_URI}</em> - (Uri) The content provider of the
+             *     PDU to be downloaded.</li>
+             *   <li><em>{@link #EXTRA_MMS_LOCATION_URL}</em> - (String) The message URL to be
+             *     downloaded.</li>
+             * </ul>
+             *
+             * <p>If a BroadcastReceiver is trying to download the message,
+             *  it should set the result code to {@link android.app.Activity#RESULT_OK} and set
+             *  the following in the result extra values:</p>
+             *
+             * <ul>
+             *   <li><em>"messageref"</em> - (int) The new message reference number which will be
+             *   later used in the updateMmsDownloadStatus call.</li>
+             * </ul>
+             *
+             * <p>If a BroadcastReceiver cannot download the message, it should not set the result
+             *  code and the platform will download it via the normal pathway.
+             * </p>
+             *
+             * <p class="note"><strong>Note:</strong>
+             * The broadcast receiver that filters for this intent must be a carrier privileged app.
+             * It must also declare {@link android.Manifest.permission#BROADCAST_WAP_PUSH} as a required
+             * permission in the <a href="{@docRoot}guide/topics/manifest/receiver-element.html">
+             * {@code &lt;receiver>}</a> tag.
+             * {@hide}
+             */
+            @SdkConstant(SdkConstantType.BROADCAST_INTENT_ACTION)
+            public static final String MMS_DOWNLOAD_ACTION =
+                    "android.provider.Telephony.MMS_DOWNLOAD";
+
+            /**
              * An extra field which stores the URI of deleted contents.
              */
             public static final String DELETED_CONTENTS = "deleted_contents";
+
+            /**
+             * The content provider of the PDU to be sent/downloaded passed as an extra for
+             * {@link #MMS_DOWNLOAD_ACTION} and {@link #MMS_SEND_ACTION}.
+             * {@hide}
+             */
+            public static final String EXTRA_MMS_CONTENT_URI =
+                    "android.provider.Telephony.extra.MMS_CONTENT_URI";
+
+            /**
+             * The message URL to be downloaded passed as an extra for {@link #MMS_DOWNLOAD_ACTION}.
+             * It is also the URL to send an MMS to passed as an extra for
+             * {@link #MMS_SEND_ACTION}.
+             * {@hide}
+             */
+            public static final String EXTRA_MMS_LOCATION_URL =
+                    "android.provider.Telephony.extra.MMS_LOCATION_URL";
         }
     }
 
@@ -2389,6 +2564,13 @@ public final class Telephony {
              * <P>Type: INTEGER (long)</P>
              */
             public static final String LAST_TRY = "last_try";
+
+            /**
+             * The phone id to which the pending message belongs to
+             * <p>Type: INTEGER (long) </p>
+             * @hide
+             */
+            public static final String PHONE_ID = "pending_phone_id";
         }
 
         /**
@@ -2597,12 +2779,53 @@ public final class Telephony {
         public static final String MVNO_MATCH_DATA = "mvno_match_data";
 
         /**
-         * Initial Preferred APN
-         * true : initial preferred APN, false : not initial preferred APN.
-         * Default is false.
+         * The sub_id to which the APN belongs to
+         * <p>Type: INTEGER (long) </p>
          * @hide
          */
-        public static final String PREFERRED = "preferred";
+        public static final String SUB_ID = "sub_id";
+
+        /**
+         * The profile_id to which the APN saved in modem
+         * <p>Type: INTEGER</p>
+         *@hide
+         */
+        public static final String PROFILE_ID = "profile_id";
+
+        /**
+         * Is the apn setting to be set in modem
+         * <P>Type: INTEGER (boolean)</P>
+         *@hide
+         */
+        public static final String MODEM_COGNITIVE = "modem_cognitive";
+
+        /**
+         * The max connections of this apn
+         * <p>Type: INTEGER</p>
+         *@hide
+         */
+        public static final String MAX_CONNS = "max_conns";
+
+        /**
+         * The wait time for retry of the apn
+         * <p>Type: INTEGER</p>
+         *@hide
+         */
+        public static final String WAIT_TIME = "wait_time";
+
+        /**
+         * The time to limit max connection for the apn
+         * <p>Type: INTEGER</p>
+         *@hide
+         */
+        public static final String MAX_CONNS_TIME = "max_conns_time";
+
+        /**
+         * The MTU size of the mobile interface to  which the APN connected
+         * <p>Type: INTEGER </p>
+         * @hide
+         */
+        public static final String MTU = "mtu";
     }
 
     /**
@@ -2779,109 +3002,5 @@ public final class Telephony {
                 CMAS_URGENCY,
                 CMAS_CERTAINTY
         };
-    }
-
-    /**
-     * @hide
-     */
-    public static final class CdmaCallOptions implements BaseColumns {
-
-        /**
-         * The content:// style URL for this table
-         */
-        public static final Uri CONTENT_URI =
-            Uri.parse("content://cdma/calloption");
-
-        /**
-         * The default sort order for this table
-         */
-        public static final String DEFAULT_SORT_ORDER = "name ASC";
-
-        public static final String NAME = "name";
-
-        public static final String MCC = "mcc";
-
-        public static final String MNC = "mnc";
-
-        public static final String NUMERIC = "numeric";
-
-        public static final String NUMBER = "number";
-
-        public static final String TYPE = "type";
-
-        public static final String CATEGORY = "category";
-
-        public static final String STATE = "state";
-
-    }
-
-    /**
-     * Contains phone numbers that are blacklisted
-     * for phone and/or message purposes.
-     * @hide
-     */
-    public static final class Blacklist implements BaseColumns {
-        /**
-         * The content:// style URL for this table
-         */
-        public static final Uri CONTENT_URI =
-                Uri.parse("content://blacklist");
-
-        /**
-         * The content:// style URL for filtering this table by number.
-         * When using this, make sure the number is correctly encoded
-         * when appended to the Uri.
-         */
-        public static final Uri CONTENT_FILTER_BYNUMBER_URI =
-                Uri.parse("content://blacklist/bynumber");
-
-        /**
-         * The content:// style URL for filtering this table on phone numbers
-         */
-        public static final Uri CONTENT_PHONE_URI =
-                Uri.parse("content://blacklist/phone");
-
-        /**
-         * The content:// style URL for filtering this table on message numbers
-         */
-        public static final Uri CONTENT_MESSAGE_URI =
-                Uri.parse("content://blacklist/message");
-
-        /**
-         * Query parameter used to match numbers by regular-expression like
-         * matching. Supported are the '*' and the '.' operators.
-         * <p>
-         * TYPE: boolean
-         */
-        public static final String REGEX_KEY = "regex";
-
-        /**
-         * The default sort order for this table
-         */
-        public static final String DEFAULT_SORT_ORDER = "number ASC";
-
-        /**
-         * The phone number as the user entered it.
-         * <P>Type: TEXT</P>
-         */
-        public static final String NUMBER = "number";
-
-        /**
-         * Whether the number contains a regular expression pattern
-         * <P>Type: BOOLEAN (read only)</P>
-         */
-        public static final String IS_REGEX = "is_regex";
-
-        /**
-         * Blacklisting mode for phone calls
-         * <P>Type: INTEGER (int)</P>
-         */
-        public static final String PHONE_MODE = "phone";
-
-        /**
-         * Blacklisting mode for messages
-         * <P>Type: INTEGER (int)</P>
-         */
-        public static final String MESSAGE_MODE = "message";
     }
 }

@@ -32,20 +32,20 @@ import java.util.HashMap;
  * one icon. Multi, for loading icons list.
  *
  */
-public class IconLoader extends Handler {
+class IconLoader extends Handler {
     // members
     private int mState = STATE_SINGLE_ICON;
     private ImageDescriptor mId = null;
     private Bitmap mCurrentIcon = null;
     private int mRecordNumber;
-    protected IccFileHandler mSimFH = null;
+    private IccFileHandler mSimFH = null;
     private Message mEndMsg = null;
     private byte[] mIconData = null;
     // multi icons state members
     private int[] mRecordNumbers = null;
     private int mCurrentRecordIndex = 0;
     private Bitmap[] mIcons = null;
-    protected HashMap<Integer, Bitmap> mIconsCache = null;
+    private HashMap<Integer, Bitmap> mIconsCache = null;
 
     private static IconLoader sLoader = null;
     private static HandlerThread sThread = null;
@@ -72,9 +72,6 @@ public class IconLoader extends Handler {
         mSimFH = fh;
 
         mIconsCache = new HashMap<Integer, Bitmap>(50);
-    }
-
-    protected IconLoader() {
     }
 
     static IconLoader getInstance(Handler caller, IccFileHandler fh) {

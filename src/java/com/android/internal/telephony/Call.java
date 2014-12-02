@@ -45,8 +45,22 @@ public abstract class Call {
         }
     }
 
-    public boolean isMpty = false;
-    private String[] mConfUriList;
+    public static State
+    stateFromDCState (DriverCall.State dcState) {
+        switch (dcState) {
+            case ACTIVE:        return State.ACTIVE;
+            case HOLDING:       return State.HOLDING;
+            case DIALING:       return State.DIALING;
+            case ALERTING:      return State.ALERTING;
+            case INCOMING:      return State.INCOMING;
+            case WAITING:       return State.WAITING;
+            default:            throw new RuntimeException ("illegal call state:" + dcState);
+        }
+    }
+
+    public enum SrvccState {
+        NONE, STARTED, COMPLETED, FAILED, CANCELED;
+    }
 
     /* Instance Variables */
 
@@ -146,14 +160,6 @@ public abstract class Call {
         }
 
         return earliest;
-    }
-
-    public String[] getConfUriList() {
-        return mConfUriList;
-    }
-
-    public void setConfUriList(String[] urilist) {
-        mConfUriList = urilist;
     }
 
     public long

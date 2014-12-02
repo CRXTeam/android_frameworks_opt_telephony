@@ -124,7 +124,6 @@ public class SmsBroadcastUndelivered implements Runnable {
                 } else {
                     SmsReferenceKey reference = new SmsReferenceKey(tracker);
                     Integer receivedCount = multiPartReceivedCount.get(reference);
-
                     // get partial segment expire age from resource which in config.xml
                     // Add this function for international roaming requirement.
                     String expireAgeString = mContext.getResources().getString(

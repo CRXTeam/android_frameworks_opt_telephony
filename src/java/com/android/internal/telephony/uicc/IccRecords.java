@@ -17,6 +17,9 @@
 package com.android.internal.telephony.uicc;
 
 import android.content.Context;
+import android.content.Intent;
+import android.telephony.TelephonyManager;
+
 import android.os.AsyncResult;
 import android.os.Handler;
 import android.os.Message;
@@ -25,9 +28,12 @@ import android.os.RegistrantList;
 
 import com.android.internal.telephony.CommandsInterface;
 import com.android.internal.telephony.uicc.IccCardApplicationStatus.AppState;
+import com.android.internal.telephony.uicc.IccCardApplicationStatus.AppType;
+import com.android.internal.telephony.PhoneConstants;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
+import java.nio.ByteBuffer;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -66,6 +72,7 @@ public abstract class IccRecords extends Handler implements IccConstants {
     protected String mNewVoiceMailTag = null;
     protected boolean mIsVoiceMailFixed = false;
     protected String mImsi;
+    private IccIoResult auth_rsp;
 
     protected int mMncLength = UNINITIALIZED;
     protected int mMailboxIndex = 0; // 0 is no mailbox dailing number associated
@@ -75,6 +82,8 @@ public abstract class IccRecords extends Handler implements IccConstants {
     protected String mSpn;
 
     protected String mGid1;
+
+    private final Object mLock = new Object();
 
     // ***** Constants
 
@@ -88,16 +97,20 @@ public abstract class IccRecords extends Handler implements IccConstants {
 
     // ***** Event Constants
     protected static final int EVENT_SET_MSISDN_DONE = 30;
-    public static final int EVENT_CFI = 0; // Call Forwarding indication
-    public static final int EVENT_SPN = 1; // Service Provider Name
-
+    public static final int EVENT_MWI = 0; // Message Waiting indication
+    public static final int EVENT_CFI = 1; // Call Forwarding indication
+    public static final int EVENT_SPN = 2; // Service Provider Name
 
     public static final int EVENT_GET_ICC_RECORD_DONE = 100;
     public static final int EVENT_REFRESH = 31; // ICC refresh occurred
+    public static final int EVENT_REFRESH_OEM = 29;
     protected static final int EVENT_APP_READY = 1;
+    private static final int EVENT_AKA_AUTHENTICATE_DONE          = 90;
 
+    private boolean mOEMHookSimRefresh = false;
     protected static final int EVENT_GET_SMS_RECORD_SIZE_DONE = 35;
 
+    @Override
     public String toString() {
         return "mDestroyed=" + mDestroyed
                 + " mContext=" + mContext
@@ -150,8 +163,13 @@ public abstract class IccRecords extends Handler implements IccConstants {
         mCi = ci;
         mFh = app.getIccFileHandler();
         mParentApp = app;
-
-        mCi.registerForIccRefresh(this, EVENT_REFRESH, null);
+        mOEMHookSimRefresh = mContext.getResources().getBoolean(
+                com.android.internal.R.bool.config_sim_refresh_for_dual_mode_card);
+        if (mOEMHookSimRefresh) {
+            mCi.registerForSimRefreshEvent(this, EVENT_REFRESH_OEM, null);
+        } else {
+            mCi.registerForIccRefresh(this, EVENT_REFRESH, null);
+        }
     }
 
     /**
@@ -159,7 +177,11 @@ public abstract class IccRecords extends Handler implements IccConstants {
      */
     public void dispose() {
         mDestroyed.set(true);
-        mCi.unregisterForIccRefresh(this);
+        if (mOEMHookSimRefresh) {
+            mCi.unregisterForSimRefreshEvent(this);
+        } else {
+            mCi.unregisterForIccRefresh(this);
+        }
         mParentApp = null;
         mFh = null;
         mCi = null;
@@ -196,6 +218,14 @@ public abstract class IccRecords extends Handler implements IccConstants {
             return;
         }
 
+        for (int i = mRecordsLoadedRegistrants.size() - 1; i >= 0 ; i--) {
+            Registrant  r = (Registrant) mRecordsLoadedRegistrants.get(i);
+            Handler rH = r.getHandler();
+
+            if (rH != null && rH == h) {
+                return;
+            }
+        }
         Registrant r = new Registrant(h, what, obj);
         mRecordsLoadedRegistrants.add(r);
 
@@ -226,6 +256,11 @@ public abstract class IccRecords extends Handler implements IccConstants {
     public void registerForRecordsEvents(Handler h, int what, Object obj) {
         Registrant r = new Registrant (h, what, obj);
         mRecordsEventsRegistrants.add(r);
+
+        /* Notify registrant of all the possible events. This is to make sure registrant is
+        notified even if event occurred in the past. */
+        r.notifyResult(EVENT_MWI);
+        r.notifyResult(EVENT_CFI);
     }
     public void unregisterForRecordsEvents(Handler h) {
         mRecordsEventsRegistrants.remove(h);
@@ -256,7 +291,16 @@ public abstract class IccRecords extends Handler implements IccConstants {
      * @return null if SIM is not yet ready or unavailable
      */
     public String getIMSI() {
-        return mImsi;
+        return null;
+    }
+
+    /**
+     * Imsi could be set by ServiceStateTrackers in case of cdma
+     * @param imsi
+     */
+    public void setImsi(String imsi) {
+        mImsi = imsi;
+        mImsiReadyRegistrants.notifyRegistrants();
     }
 
     public String getMsisdnNumber() {
@@ -310,11 +354,38 @@ public abstract class IccRecords extends Handler implements IccConstants {
     }
 
     /**
-     * Return Service Provider Name stored in SIM (EF_SPN=0x6F46) or in RUIM (EF_RUIM_SPN=0x6F41)
+     * Return Service Provider Name stored in SIM (EF_SPN=0x6F46) or in RUIM (EF_RUIM_SPN=0x6F41).
+     *
      * @return null if SIM is not yet ready or no RUIM entry
      */
     public String getServiceProviderName() {
-        return mSpn;
+        String providerName = mSpn;
+
+        // Check for null pointers, mParentApp can be null after dispose,
+        // which did occur after removing a SIM.
+        UiccCardApplication parentApp = mParentApp;
+        if (parentApp != null) {
+            UiccCard card = parentApp.getUiccCard();
+            if (card != null) {
+                String brandOverride = card.getOperatorBrandOverride();
+                if (brandOverride != null) {
+                    log("getServiceProviderName: override");
+                    providerName = brandOverride;
+                } else {
+                    log("getServiceProviderName: no brandOverride");
+                }
+            } else {
+                log("getServiceProviderName: card is null");
+            }
+        } else {
+            log("getServiceProviderName: mParentApp is null");
+        }
+        log("getServiceProviderName: providerName=" + providerName);
+        return providerName;
+    }
+
+    protected void setServiceProviderName(String spn) {
+        mSpn = spn;
     }
 
     /**
@@ -375,7 +446,9 @@ public abstract class IccRecords extends Handler implements IccConstants {
      */
     protected void onIccRefreshInit() {
         mAdnCache.reset();
-        if (mParentApp.getState() == AppState.APPSTATE_READY) {
+        UiccCardApplication parentApp = mParentApp;
+        if ((parentApp != null) &&
+                (parentApp.getState() == AppState.APPSTATE_READY)) {
             // This will cause files to be reread
             sendMessage(obtainMessage(EVENT_APP_READY));
         }
@@ -417,10 +490,40 @@ public abstract class IccRecords extends Handler implements IccConstants {
                 ar = (AsyncResult)msg.obj;
                 if (DBG) log("Card REFRESH occurred: ");
                 if (ar.exception == null) {
-                    handleRefresh((IccRefreshResponse)ar.result);
+                     broadcastRefresh();
+                     handleRefresh((IccRefreshResponse)ar.result);
                 } else {
                     loge("Icc refresh Exception: " + ar.exception);
                 }
+                break;
+            case EVENT_REFRESH_OEM:
+                ar = (AsyncResult)msg.obj;
+                if (DBG) log("Card REFRESH OEM occurred: ");
+                if (ar.exception == null) {
+                    handleRefreshOem((byte[])ar.result);
+                } else {
+                    loge("Icc refresh OEM Exception: " + ar.exception);
+                }
+                break;
+
+            case EVENT_AKA_AUTHENTICATE_DONE:
+                ar = (AsyncResult)msg.obj;
+                auth_rsp = null;
+                if (DBG) log("EVENT_AKA_AUTHENTICATE_DONE");
+                if (ar.exception != null) {
+                    loge("Exception ICC SIM AKA: " + ar.exception);
+                } else {
+                    try {
+                        auth_rsp = (IccIoResult)ar.result;
+                        if (DBG) log("ICC SIM AKA: auth_rsp = " + auth_rsp);
+                    } catch (Exception e) {
+                        loge("Failed to parse ICC SIM AKA contents: " + e);
+                    }
+                }
+                synchronized (mLock) {
+                    mLock.notifyAll();
+                }
+
                 break;
             case EVENT_GET_SMS_RECORD_SIZE_DONE:
                 ar = (AsyncResult) msg.obj;
@@ -452,7 +555,10 @@ public abstract class IccRecords extends Handler implements IccConstants {
 
     protected abstract void handleFileUpdate(int efid);
 
-    private void handleRefresh(IccRefreshResponse refreshResponse){
+    protected void broadcastRefresh() {
+    }
+
+    protected void handleRefresh(IccRefreshResponse refreshResponse){
         if (refreshResponse == null) {
             if (DBG) log("handleRefresh received without input");
             return;
@@ -472,9 +578,11 @@ public abstract class IccRecords extends Handler implements IccConstants {
             case IccRefreshResponse.REFRESH_RESULT_INIT:
                 if (DBG) log("handleRefresh with SIM_REFRESH_INIT");
                 // need to reload all files (that we care about)
-                mAdnCache.reset();
-                //We will re-fetch the records when the app
-                // goes back to the ready state. Nothing to do here.
+                if (mAdnCache != null) {
+                    mAdnCache.reset();
+                    //We will re-fetch the records when the app
+                    // goes back to the ready state. Nothing to do here.
+                }
                 break;
             case IccRefreshResponse.REFRESH_RESULT_RESET:
                 if (DBG) log("handleRefresh with SIM_REFRESH_RESET");
@@ -487,8 +595,13 @@ public abstract class IccRecords extends Handler implements IccConstants {
                     * desired power state has changed in the interim, we don't want to
                     * override it with an unconditional power on.
                     */
+                } else {
+                    if(mAdnCache != null) {
+                        mAdnCache.reset();
+                    }
+                    mRecordsRequested = false;
+                    mImsi = null;
                 }
-                mAdnCache.reset();
                 //We will re-fetch the records when the app
                 // goes back to the ready state. Nothing to do here.
                 break;
@@ -496,6 +609,34 @@ public abstract class IccRecords extends Handler implements IccConstants {
                 // unknown refresh operation
                 if (DBG) log("handleRefresh with unknown operation");
                 break;
+        }
+    }
+
+    private void handleRefreshOem(byte[] data){
+        ByteBuffer payload = ByteBuffer.wrap(data);
+        IccRefreshResponse response = UiccController.parseOemSimRefresh(payload);
+
+        IccCardApplicationStatus appStatus = new IccCardApplicationStatus();
+        AppType appType = appStatus.AppTypeFromRILInt(payload.getInt());
+        int slotId = (int)payload.get();
+        if ((appType != AppType.APPTYPE_UNKNOWN)
+            && (appType != mParentApp.getType())) {
+            // This is for different app. Ignore.
+            return;
+        }
+
+        broadcastRefresh();
+        handleRefresh(response);
+
+        if (response.refreshResult == IccRefreshResponse.REFRESH_RESULT_FILE_UPDATE ||
+            response.refreshResult == IccRefreshResponse.REFRESH_RESULT_INIT) {
+            log("send broadcast org.codeaurora.intent.action.ACTION_SIM_REFRESH_UPDATE");
+            Intent sendIntent = new Intent(
+                    "org.codeaurora.intent.action.ACTION_SIM_REFRESH_UPDATE");
+            if (TelephonyManager.getDefault().isMultiSimEnabled()){
+                sendIntent.putExtra(PhoneConstants.SLOT_KEY, slotId);
+            }
+            mContext.sendBroadcast(sendIntent, null);
         }
     }
 
@@ -594,6 +735,56 @@ public abstract class IccRecords extends Handler implements IccConstants {
 
     public UsimServiceTable getUsimServiceTable() {
         return null;
+    }
+
+    /**
+     * Returns the response of the SIM application on the UICC to authentication
+     * challenge/response algorithm. The data string and challenge response are
+     * Base64 encoded Strings.
+     * Can support EAP-SIM, EAP-AKA with results encoded per 3GPP TS 31.102.
+     *
+     * @param authContext parameter P2 that specifies the authentication context per 3GPP TS 31.102 (Section 7.1.2)
+     * @param data authentication challenge data
+     * @return challenge response
+     */
+    public String getIccSimChallengeResponse(int authContext, String data) {
+        if (DBG) log("getIccSimChallengeResponse:");
+
+        try {
+            synchronized(mLock) {
+                CommandsInterface ci = mCi;
+                UiccCardApplication parentApp = mParentApp;
+                if (ci != null && parentApp != null) {
+                    ci.requestIccSimAuthentication(authContext, data,
+                            parentApp.getAid(),
+                            obtainMessage(EVENT_AKA_AUTHENTICATE_DONE));
+                    try {
+                        mLock.wait();
+                    } catch (InterruptedException e) {
+                        loge("getIccSimChallengeResponse: Fail, interrupted"
+                                + " while trying to request Icc Sim Auth");
+                        return null;
+                    }
+                } else {
+                    loge( "getIccSimChallengeResponse: "
+                            + "Fail, ci or parentApp is null");
+                    return null;
+                }
+            }
+        } catch(Exception e) {
+            loge( "getIccSimChallengeResponse: "
+                    + "Fail while trying to request Icc Sim Auth");
+            return null;
+        }
+
+        if (DBG) log("getIccSimChallengeResponse: return auth_rsp");
+
+        return android.util.Base64.encodeToString(auth_rsp.payload, android.util.Base64.NO_WRAP);
+    }
+
+    protected boolean requirePowerOffOnSimRefreshReset() {
+        return mContext.getResources().getBoolean(
+            com.android.internal.R.bool.config_requireRadioPowerOffOnSimRefreshReset);
     }
 
     /**

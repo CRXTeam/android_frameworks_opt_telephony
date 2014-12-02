@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2006 The Android Open Source Project
- * Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2014, The Linux Foundation. All rights reserved.
  *
  * Not a Contribution.
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,25 +18,127 @@
 
 package com.android.internal.telephony.dataconnection;
 
+import android.text.TextUtils;
+
 import com.android.internal.telephony.PhoneConstants;
 import com.android.internal.telephony.RILConstants;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 
 /**
  * This class represents a apn setting for create PDP link
  */
-public class ApnSetting extends DataProfile {
+public class ApnSetting {
 
     static final String V2_FORMAT_REGEX = "^\\[ApnSettingV2\\]\\s*";
+    static final String V3_FORMAT_REGEX = "^\\[ApnSettingV3\\]\\s*";
+
+    public final String carrier;
+    public final String apn;
+    public final String proxy;
+    public final String port;
+    public final String mmsc;
+    public final String mmsProxy;
+    public final String mmsPort;
+    public final String user;
+    public final String password;
+    public final int authType;
+    public String[] types;
+    public final int id;
+    public final String numeric;
+    public final String protocol;
+    public final String roamingProtocol;
+    public final int mtu;
+
+    /**
+      * Current status of APN
+      * true : enabled APN, false : disabled APN.
+      */
+    public final boolean carrierEnabled;
+    /**
+      * Radio Access Technology info
+      * To check what values can hold, refer to ServiceState.java.
+      * This should be spread to other technologies,
+      * but currently only used for LTE(14) and EHRPD(13).
+      */
+    public final int bearer;
+
+    /* ID of the profile in the modem */
+    public int profileId;
+    public final boolean modemCognitive;
+    public final int maxConns;
+    public final int waitTime;
+    public final int maxConnsTime;
+
+    /**
+      * MVNO match type. Possible values:
+      *   "spn": Service provider name.
+      *   "imsi": IMSI.
+      *   "gid": Group identifier level 1.
+      */
+    public final String mvnoType;
+    /**
+      * MVNO data. Examples:
+      *   "spn": A MOBILE, BEN NL
+      *   "imsi": 302720x94, 2060188
+      *   "gid": 4E, 33
+      */
+    public final String mvnoMatchData;
+
+    public enum ApnProfileType {
+        PROFILE_TYPE_APN(0),
+        PROFILE_TYPE_CDMA(1),
+        PROFILE_TYPE_OMH(2);
+
+        int id;
+
+        private ApnProfileType(int i) {
+            this.id = i;
+        }
+
+        public int getid() {
+            return id;
+        }
+    }
 
     public ApnSetting(int id, String numeric, String carrier, String apn,
             String proxy, String port,
             String mmsc, String mmsProxy, String mmsPort,
             String user, String password, int authType, String[] types,
-            String protocol, String roamingProtocol, boolean carrierEnabled, int bearer) {
-        super(id, numeric, apn, user, password, authType,
-                types, protocol, roamingProtocol, bearer,
-                carrier, proxy, port, mmsc, mmsProxy, mmsPort,
-                carrierEnabled);
+            String protocol, String roamingProtocol, boolean carrierEnabled, int bearer,
+            int profileId, boolean modemCognitive, int maxConns, int waitTime, int maxConnsTime,
+            int mtu, String mvnoType, String mvnoMatchData) {
+        this.id = id;
+        this.numeric = numeric;
+        this.carrier = carrier;
+        this.apn = apn;
+        this.proxy = proxy;
+        this.port = port;
+        this.mmsc = mmsc;
+        this.mmsProxy = mmsProxy;
+        this.mmsPort = mmsPort;
+        this.user = user;
+        this.password = password;
+        this.authType = authType;
+        this.types = new String[types.length];
+        for (int i = 0; i < types.length; i++) {
+            this.types[i] = types[i].toLowerCase(Locale.ROOT);
+        }
+        this.protocol = protocol;
+        this.roamingProtocol = roamingProtocol;
+        this.carrierEnabled = carrierEnabled;
+        this.bearer = bearer;
+        this.profileId = profileId;
+        this.modemCognitive = modemCognitive;
+        this.maxConns = maxConns;
+        this.waitTime = waitTime;
+        this.maxConnsTime = maxConnsTime;
+        this.mtu = mtu;
+        this.mvnoType = mvnoType;
+        this.mvnoMatchData = mvnoMatchData;
+
     }
 
     /**
@@ -48,14 +150,21 @@ public class ApnSetting extends DataProfile {
      * spaces are optional):
      *
      * v1 format:
-     *   <carrier>, <apn>, <proxy>, <port>, <mmsc>, <mmsproxy>,
-     *   <mmsport>, <user>, <password>, <authtype>, <mcc>,<mnc>,
-     *   <type>[, <type>...]
+     *   <carrier>, <apn>, <proxy>, <port>, <user>, <password>, <server>,
+     *   <mmsc>, <mmsproxy>, <mmsport>, <mcc>, <mnc>, <authtype>,
+     *   <type>[| <type>...],
      *
      * v2 format:
-     *   [ApnSettingV2] <carrier>, <apn>, <proxy>, <port>, <mmsc>, <mmsproxy>,
-     *   <mmsport>, <user>, <password>, <authtype>, <mcc>, <mnc>,
-     *   <type>[| <type>...], <protocol>, <roaming_protocol>, <carrierEnabled>, <bearer>
+     *   [ApnSettingV2] <carrier>, <apn>, <proxy>, <port>, <user>, <password>, <server>,
+     *   <mmsc>, <mmsproxy>, <mmsport>, <mcc>, <mnc>, <authtype>,
+     *   <type>[| <type>...], <protocol>, <roaming_protocol>, <carrierEnabled>, <bearer>,
+     *
+     * v3 format:
+     *   [ApnSettingV3] <carrier>, <apn>, <proxy>, <port>, <user>, <password>, <server>,
+     *   <mmsc>, <mmsproxy>, <mmsport>, <mcc>, <mnc>, <authtype>,
+     *   <type>[| <type>...], <protocol>, <roaming_protocol>, <carrierEnabled>, <bearer>,
+     *   <profileId>, <modemCognitive>, <maxConns>, <waitTime>, <maxConnsTime>, <mtu>,
+     *   <mvnoType>, <mvnoMatchData>
      *
      * Note that the strings generated by toString() do not contain the username
      * and password and thus cannot be read by this method.
@@ -65,7 +174,10 @@ public class ApnSetting extends DataProfile {
 
         int version;
         // matches() operates on the whole string, so append .* to the regex.
-        if (data.matches(V2_FORMAT_REGEX + ".*")) {
+        if (data.matches(V3_FORMAT_REGEX + ".*")) {
+            version = 3;
+            data = data.replaceFirst(V3_FORMAT_REGEX, "");
+        } else if (data.matches(V2_FORMAT_REGEX + ".*")) {
             version = 2;
             data = data.replaceFirst(V2_FORMAT_REGEX, "");
         } else {
@@ -80,14 +192,22 @@ public class ApnSetting extends DataProfile {
         int authType;
         try {
             authType = Integer.parseInt(a[12]);
-        } catch (Exception e) {
+        } catch (NumberFormatException e) {
             authType = 0;
         }
 
         String[] typeArray;
         String protocol, roamingProtocol;
         boolean carrierEnabled;
-        int bearer;
+        int bearer = 0;
+        int profileId = 0;
+        boolean modemCognitive = false;
+        int maxConns = 0;
+        int waitTime = 0;
+        int maxConnsTime = 0;
+        int mtu = PhoneConstants.UNSET_MTU;
+        String mvnoType = "";
+        String mvnoMatchData = "";
         if (version == 1) {
             typeArray = new String[a.length - 13];
             System.arraycopy(a, 13, typeArray, 0, a.length - 13);
@@ -102,22 +222,68 @@ public class ApnSetting extends DataProfile {
             typeArray = a[13].split("\\s*\\|\\s*");
             protocol = a[14];
             roamingProtocol = a[15];
+            carrierEnabled = Boolean.parseBoolean(a[16]);
+
             try {
-                carrierEnabled = Boolean.parseBoolean(a[16]);
-            } catch (Exception e) {
-                carrierEnabled = true;
+                bearer = Integer.parseInt(a[17]);
+            } catch (NumberFormatException ex) {
             }
-            bearer = Integer.parseInt(a[17]);
+
+            if (a.length > 22) {
+                modemCognitive = Boolean.parseBoolean(a[19]);
+                try {
+                    profileId = Integer.parseInt(a[18]);
+                    maxConns = Integer.parseInt(a[20]);
+                    waitTime = Integer.parseInt(a[21]);
+                    maxConnsTime = Integer.parseInt(a[22]);
+                } catch (NumberFormatException e) {
+                }
+            }
+            if (a.length > 23) {
+                try {
+                    mtu = Integer.parseInt(a[23]);
+                } catch (NumberFormatException e) {
+                }
+            }
+            if (a.length > 25) {
+                mvnoType = a[24];
+                mvnoMatchData = a[25];
+            }
         }
 
         return new ApnSetting(-1,a[10]+a[11],a[0],a[1],a[2],a[3],a[7],a[8],
-                a[9],a[4],a[5],authType,typeArray,protocol,roamingProtocol,carrierEnabled,bearer);
+                a[9],a[4],a[5],authType,typeArray,protocol,roamingProtocol,carrierEnabled,bearer,
+                profileId, modemCognitive, maxConns, waitTime, maxConnsTime, mtu,
+                mvnoType, mvnoMatchData);
+    }
+
+    /**
+     * Creates an array of ApnSetting objects from a string.
+     *
+     * @param data the string to read.
+     *
+     * Builds on top of the same format used by fromString, but allows for multiple entries
+     * separated by "; ".
+     */
+    public static List<ApnSetting> arrayFromString(String data) {
+        List<ApnSetting> retVal = new ArrayList<ApnSetting>();
+        if (TextUtils.isEmpty(data)) {
+            return retVal;
+        }
+        String[] apnStrings = data.split("\\s*;\\s*");
+        for (String apnString : apnStrings) {
+            ApnSetting apn = fromString(apnString);
+            if (apn != null) {
+                retVal.add(apn);
+            }
+        }
+        return retVal;
     }
 
     @Override
     public String toString() {
         StringBuilder sb = new StringBuilder();
-        sb.append("[ApnSettingV2] ")
+        sb.append("[ApnSettingV3] ")
         .append(carrier)
         .append(", ").append(id)
         .append(", ").append(numeric)
@@ -138,21 +304,26 @@ public class ApnSetting extends DataProfile {
         sb.append(", ").append(roamingProtocol);
         sb.append(", ").append(carrierEnabled);
         sb.append(", ").append(bearer);
+        sb.append(", ").append(profileId);
+        sb.append(", ").append(modemCognitive);
+        sb.append(", ").append(maxConns);
+        sb.append(", ").append(waitTime);
+        sb.append(", ").append(maxConnsTime);
+        sb.append(", ").append(mtu);
+        sb.append(", ").append(mvnoType);
+        sb.append(", ").append(mvnoMatchData);
         return sb.toString();
     }
 
-    @Override
-    public DataProfileType getDataProfileType() {
-        return DataProfileType.PROFILE_TYPE_APN;
+    /**
+     * Returns true if there are MVNO params specified.
+     */
+    public boolean hasMvnoParams() {
+        return !TextUtils.isEmpty(mvnoType) && !TextUtils.isEmpty(mvnoMatchData);
     }
 
-    @Override
-    public int getProfileId() {
-        return id;
-    }
-
-    @Override
     public boolean canHandleType(String type) {
+        if (!carrierEnabled) return false;
         for (String t : types) {
             // DEFAULT handles all, and HIPRI is handled by DEFAULT
             if (t.equalsIgnoreCase(type) ||
@@ -173,12 +344,18 @@ public class ApnSetting extends DataProfile {
         return (toString().equals(o.toString()));
     }
 
-    @Override
+    public ApnProfileType getApnProfileType() {
+        return ApnProfileType.PROFILE_TYPE_APN;
+    }
+
+    public int getProfileId() {
+        return profileId;
+    }
+
     public String toShortString() {
         return "ApnSetting";
     }
 
-    @Override
     public String toHash() {
         return this.toString();
     }

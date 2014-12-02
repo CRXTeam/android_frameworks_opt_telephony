@@ -16,7 +16,6 @@
 
 package com.android.internal.telephony.uicc;
 
-import java.io.Closeable;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileReader;
@@ -39,27 +38,34 @@ public class SpnOverride {
     static final String LOG_TAG = "SpnOverride";
     static final String PARTNER_SPN_OVERRIDE_PATH ="etc/spn-conf.xml";
 
-    SpnOverride () {
+    public SpnOverride () {
         mCarrierSpnMap = new HashMap<String, String>();
         loadSpnOverrides();
     }
 
-    boolean containsCarrier(String carrier) {
+    public boolean containsCarrier(String carrier) {
         return mCarrierSpnMap.containsKey(carrier);
     }
 
-    String getSpn(String carrier) {
+    public String getSpn(String carrier) {
         return mCarrierSpnMap.get(carrier);
     }
 
     private void loadSpnOverrides() {
-        FileReader spnReader = null;
+        FileReader spnReader;
 
         final File spnFile = new File(Environment.getRootDirectory(),
                 PARTNER_SPN_OVERRIDE_PATH);
 
         try {
             spnReader = new FileReader(spnFile);
+        } catch (FileNotFoundException e) {
+            Rlog.w(LOG_TAG, "Can not open " +
+                    Environment.getRootDirectory() + "/" + PARTNER_SPN_OVERRIDE_PATH);
+            return;
+        }
+
+        try {
             XmlPullParser parser = Xml.newPullParser();
             parser.setInput(spnReader);
 
@@ -74,28 +80,15 @@ public class SpnOverride {
                 }
 
                 String numeric = parser.getAttributeValue(null, "numeric");
-                String data = parser.getAttributeValue(null, "spn");
+                String data    = parser.getAttributeValue(null, "spn");
 
                 mCarrierSpnMap.put(numeric, data);
             }
-        } catch (FileNotFoundException e) {
-            Rlog.w(LOG_TAG, "Can not open " +
-                    Environment.getRootDirectory() + "/" + PARTNER_SPN_OVERRIDE_PATH);
-            return;
+            spnReader.close();
         } catch (XmlPullParserException e) {
             Rlog.w(LOG_TAG, "Exception in spn-conf parser " + e);
         } catch (IOException e) {
             Rlog.w(LOG_TAG, "Exception in spn-conf parser " + e);
-        } finally {
-            closeQuietly(spnReader);
-        }
-    }
-
-    private void closeQuietly(Closeable closeable) {
-        if (closeable != null) {
-            try {
-                closeable.close();
-            } catch (IOException e) {}
         }
     }
 

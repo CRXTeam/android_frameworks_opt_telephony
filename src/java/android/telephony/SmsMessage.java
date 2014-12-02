@@ -1,6 +1,4 @@
 /*
- * Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
- * Not a Contribution.
  * Copyright (C) 2008 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,12 +18,16 @@ package android.telephony;
 
 import android.os.Parcel;
 import android.telephony.Rlog;
+import android.content.res.Resources;
+import android.telephony.SubscriptionManager;
+import android.text.TextUtils;
 
 import com.android.internal.telephony.GsmAlphabet;
 import com.android.internal.telephony.GsmAlphabet.TextEncodingDetails;
 import com.android.internal.telephony.SmsConstants;
 import com.android.internal.telephony.SmsMessageBase;
 import com.android.internal.telephony.SmsMessageBase.SubmitPduBase;
+import com.android.internal.telephony.Sms7BitEncodingTranslator;
 
 import java.lang.Math;
 import java.util.ArrayList;
@@ -92,12 +94,6 @@ public class SmsMessage {
      */
     public static final String FORMAT_3GPP2 = "3gpp2";
 
-    /**
-     * Indicates a synthetic SMS message.
-     * @hide
-     */
-    public static final String FORMAT_SYNTHETIC = "synthetic";
-
     /** Contains actual SmsMessage. Only public for debugging and for framework layer.
      *
      * @hide
@@ -108,13 +104,13 @@ public class SmsMessage {
      *
      * @hide
      */
-    private int mSubId = 0;
+    private long mSubId = 0;
 
     /** set Subscription information
      *
      * @hide
      */
-    public void setSubId(int subId) {
+    public void setSubId(long subId) {
         mSubId = subId;
     }
 
@@ -122,7 +118,7 @@ public class SmsMessage {
      *
      * @hide
      */
-    public int getSubId() {
+    public long getSubId() {
         return mSubId;
     }
 
@@ -173,9 +169,6 @@ public class SmsMessage {
         int activePhone = TelephonyManager.getDefault().getCurrentPhoneType();
         String format = (PHONE_TYPE_CDMA == activePhone) ?
                 SmsConstants.FORMAT_3GPP2 : SmsConstants.FORMAT_3GPP;
-        if (com.android.internal.telephony.SyntheticSmsMessage.isSyntheticPdu(pdu)) {
-            format = FORMAT_SYNTHETIC;
-        }
         message = createFromPdu(pdu, format);
 
         if (null == message || null == message.mWrappedSmsMessage) {
@@ -204,8 +197,6 @@ public class SmsMessage {
             wrappedMessage = com.android.internal.telephony.cdma.SmsMessage.createFromPdu(pdu);
         } else if (SmsConstants.FORMAT_3GPP.equals(format)) {
             wrappedMessage = com.android.internal.telephony.gsm.SmsMessage.createFromPdu(pdu);
-        } else if (FORMAT_SYNTHETIC.equals(format)) {
-            wrappedMessage = com.android.internal.telephony.SyntheticSmsMessage.createFromPdu(pdu);
         } else {
             Rlog.e(LOG_TAG, "createFromPdu(): unsupported message format " + format);
             return null;
@@ -270,15 +261,15 @@ public class SmsMessage {
      * @param index Index of SMS record. This should be index in ArrayList
      *              returned by SmsManager.getAllMessagesFromSim + 1.
      * @param data Record data.
-     * @param sub Subscription index of the SMS
+     * @param subId Subscription Id of the SMS
      * @return An SmsMessage representing the record.
      *
      * @hide
      */
-    public static SmsMessage createFromEfRecord(int index, byte[] data, int sub) {
+    public static SmsMessage createFromEfRecord(int index, byte[] data, long subId) {
         SmsMessageBase wrappedMessage;
 
-        if (isCdmaVoice(sub)) {
+        if (isCdmaVoice(subId)) {
             wrappedMessage = com.android.internal.telephony.cdma.SmsMessage.createFromEfRecord(
                     index, data);
         } else {
@@ -288,6 +279,7 @@ public class SmsMessage {
 
         return wrappedMessage != null ? new SmsMessage(wrappedMessage) : null;
     }
+
 
     /**
      * Get the TP-Layer-Length for the given SMS-SUBMIT PDU Basically, the
@@ -385,13 +377,30 @@ public class SmsMessage {
         } else {
             if (ted.msgCount > 1) {
                 limit = SmsConstants.MAX_USER_DATA_BYTES_WITH_HEADER;
+                // If EMS is not supported, break down EMS into single segment SMS
+                // and add page info " x/y".
+                // In the case of UCS2 encoding, we need 8 bytes for this,
+                // but we only have 6 bytes from UDH, so truncate the limit for
+                // each segment by 2 bytes (1 char).
+                // Make sure total number of segments is less than 10.
+                if (!hasEmsSupport() && ted.msgCount < 10) {
+                    limit -= 2;
+                }
             } else {
                 limit = SmsConstants.MAX_USER_DATA_BYTES;
             }
         }
 
+        String newMsgBody = null;
+        Resources r = Resources.getSystem();
+        if (r.getBoolean(com.android.internal.R.bool.config_sms_force_7bit_encoding)) {
+            newMsgBody  = Sms7BitEncodingTranslator.translate(text);
+        }
+        if (TextUtils.isEmpty(newMsgBody)) {
+            newMsgBody = text;
+        }
         int pos = 0;  // Index in code units.
-        int textLen = text.length();
+        int textLen = newMsgBody.length();
         ArrayList<String> result = new ArrayList<String>(ted.msgCount);
         while (pos < textLen) {
             int nextPos = 0;  // Counts code units.
@@ -401,7 +410,7 @@ public class SmsMessage {
                     nextPos = pos + Math.min(limit, textLen - pos);
                 } else {
                     // For multi-segment messages, CDMA 7bit equals GSM 7bit encoding (EMS mode).
-                    nextPos = GsmAlphabet.findGsmSeptetLimitIndex(text, pos, limit,
+                    nextPos = GsmAlphabet.findGsmSeptetLimitIndex(newMsgBody, pos, limit,
                             ted.languageTable, ted.languageShiftTable);
                 }
             } else {  // Assume unicode.
@@ -412,7 +421,7 @@ public class SmsMessage {
                           nextPos + " >= " + textLen + ")");
                 break;
             }
-            result.add(text.substring(pos, nextPos));
+            result.add(newMsgBody.substring(pos, nextPos));
             pos = nextPos;
         }
         return result;
@@ -486,18 +495,16 @@ public class SmsMessage {
      * This method will not attempt to use any GSM national language 7 bit encodings.
      *
      * @param scAddress Service Centre address.  Null means use default.
-     * @param sub Subscription of the message
+     * @param subId Subscription of the message
      * @return a <code>SubmitPdu</code> containing the encoded SC
      *         address, if applicable, and the encoded message.
      *         Returns null on encode error.
-     *
      * @hide
      */
     public static SubmitPdu getSubmitPdu(String scAddress,
-            String destinationAddress, String message, boolean statusReportRequested, int sub) {
+            String destinationAddress, String message, boolean statusReportRequested, long subId) {
         SubmitPduBase spb;
-
-        if (useCdmaFormatForMoSms(sub)) {
+        if (useCdmaFormatForMoSms(subId)) {
             spb = com.android.internal.telephony.cdma.SmsMessage.getSubmitPdu(scAddress,
                     destinationAddress, message, statusReportRequested, null);
         } else {
@@ -790,12 +797,14 @@ public class SmsMessage {
      * @return true if Cdma format should be used for MO SMS, false otherwise.
      */
     private static boolean useCdmaFormatForMoSms() {
-        if (!SmsManager.getDefault().isImsSmsSupported()) {
+        SmsManager smsManager = SmsManager.getSmsManagerForSubscriber(
+                SubscriptionManager.getDefaultSmsSubId());
+        if (!smsManager.isImsSmsSupported()) {
             // use Voice technology to determine SMS format.
             return isCdmaVoice();
         }
         // IMS is registered with SMS support, check the SMS format supported
-        return (SmsConstants.FORMAT_3GPP2.equals(SmsManager.getDefault().getImsSmsFormat()));
+        return (SmsConstants.FORMAT_3GPP2.equals(smsManager.getImsSmsFormat()));
     }
 
     /**
@@ -803,19 +812,18 @@ public class SmsMessage {
      * If SMS over IMS is supported, then format is based on IMS SMS format,
      * otherwise format is based on current phone type.
      *
-     * @param sub Subscription for which phone type is returned.
+     * @param subId Subscription for which phone type is returned.
      *
      * @return true if Cdma format should be used for MO SMS, false otherwise.
-     *
-     * @hide
      */
-    private static boolean useCdmaFormatForMoSms(int sub) {
-        if (!MSimSmsManager.getDefault().isImsSmsSupported(sub)) {
+    private static boolean useCdmaFormatForMoSms(long subId) {
+        SmsManager smsManager = SmsManager.getSmsManagerForSubscriber(subId);
+        if (!smsManager.isImsSmsSupported()) {
             // use Voice technology to determine SMS format.
-            return isCdmaVoice(sub);
+            return isCdmaVoice(subId);
         }
         // IMS is registered with SMS support, check the SMS format supported
-        return (SmsConstants.FORMAT_3GPP2.equals(MSimSmsManager.getDefault().getImsSmsFormat(sub)));
+        return (SmsConstants.FORMAT_3GPP2.equals(smsManager.getImsSmsFormat()));
     }
 
     /**
@@ -829,16 +837,103 @@ public class SmsMessage {
     }
 
     /**
-     * Determines whether or not to current phone type is cdma for given susbcription.
+     * Determines whether or not to current phone type is cdma.
      *
-     * @param subscription Subscription for which phone type is returned
+     * @param subId Subscription Id of the SMS
      * @return true if current phone type is cdma, false otherwise.
-     *
-     * @hide
      */
-    private static boolean isCdmaVoice(int subscription) {
-        int activePhone = MSimTelephonyManager.getDefault().getCurrentPhoneType(subscription);
+    private static boolean isCdmaVoice(long subId) {
+        int activePhone = TelephonyManager.getDefault().getCurrentPhoneType(subId);
         return (PHONE_TYPE_CDMA == activePhone);
+    }
+
+    /**
+     * Decide if the carrier supports long SMS.
+     * {@hide}
+     */
+    public static boolean hasEmsSupport() {
+        if (!isNoEmsSupportConfigListExisted()) {
+            return true;
+        }
+
+        String simOperator = TelephonyManager.getDefault().getSimOperator();
+        String gid = TelephonyManager.getDefault().getGroupIdLevel1();
+
+        for (NoEmsSupportConfig currentConfig : mNoEmsSupportConfigList) {
+            if (simOperator.startsWith(currentConfig.mOperatorNumber) &&
+                (TextUtils.isEmpty(currentConfig.mGid1) ||
+                (!TextUtils.isEmpty(currentConfig.mGid1)
+                && currentConfig.mGid1.equalsIgnoreCase(gid)))) {
+                return false;
+            }
+         }
+        return true;
+    }
+
+    /**
+     * Check where to add " x/y" in each SMS segment, begin or end.
+     * {@hide}
+     */
+    public static boolean shouldAppendPageNumberAsPrefix() {
+        if (!isNoEmsSupportConfigListExisted()) {
+            return false;
+        }
+
+        String simOperator = TelephonyManager.getDefault().getSimOperator();
+        String gid = TelephonyManager.getDefault().getGroupIdLevel1();
+        for (NoEmsSupportConfig currentConfig : mNoEmsSupportConfigList) {
+            if (simOperator.startsWith(currentConfig.mOperatorNumber) &&
+                (TextUtils.isEmpty(currentConfig.mGid1) ||
+                (!TextUtils.isEmpty(currentConfig.mGid1)
+                && currentConfig.mGid1.equalsIgnoreCase(gid)))) {
+                return currentConfig.mIsPrefix;
+            }
+        }
+        return false;
+    }
+
+    private static class NoEmsSupportConfig {
+        String mOperatorNumber;
+        String mGid1;
+        boolean mIsPrefix;
+
+        public NoEmsSupportConfig(String[] config) {
+            mOperatorNumber = config[0];
+            mIsPrefix = "prefix".equals(config[1]);
+            mGid1 = config.length > 2 ? config[2] : null;
+        }
+
+        @Override
+        public String toString() {
+            return "NoEmsSupportConfig { mOperatorNumber = " + mOperatorNumber
+                    + ", mIsPrefix = " + mIsPrefix + ", mGid1 = " + mGid1 + " }";
+        }
+    }
+
+    private static NoEmsSupportConfig[] mNoEmsSupportConfigList = null;
+    private static boolean mIsNoEmsSupportConfigListLoaded = false;
+
+    private static boolean isNoEmsSupportConfigListExisted() {
+        if (!mIsNoEmsSupportConfigListLoaded) {
+            Resources r = Resources.getSystem();
+            if (r != null) {
+                String[] listArray = r.getStringArray(
+                        com.android.internal.R.array.no_ems_support_sim_operators);
+                if ((listArray != null) && (listArray.length > 0)) {
+                    mNoEmsSupportConfigList = new NoEmsSupportConfig[listArray.length];
+                    for (int i=0; i<listArray.length; i++) {
+                        mNoEmsSupportConfigList[i] = new NoEmsSupportConfig(listArray[i].split(";"));
+                    }
+                }
+                mIsNoEmsSupportConfigListLoaded = true;
+            }
+        }
+
+        if (mNoEmsSupportConfigList != null && mNoEmsSupportConfigList.length != 0) {
+            return true;
+        }
+
+        return false;
     }
 
     /**

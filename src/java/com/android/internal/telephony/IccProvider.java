@@ -20,10 +20,14 @@ import android.content.ContentProvider;
 import android.content.UriMatcher;
 import android.content.ContentValues;
 import android.database.Cursor;
+import android.database.MergeCursor;
 import android.database.MatrixCursor;
 import android.net.Uri;
 import android.os.RemoteException;
 import android.os.ServiceManager;
+import android.telephony.SubInfoRecord;
+import android.telephony.SubscriptionManager;
+import android.telephony.TelephonyManager;
 import android.text.TextUtils;
 import android.telephony.Rlog;
 
@@ -42,7 +46,7 @@ public class IccProvider extends ContentProvider {
     private static final boolean DBG = false;
 
 
-    protected static final String[] ADDRESS_BOOK_COLUMN_NAMES = new String[] {
+    private static final String[] ADDRESS_BOOK_COLUMN_NAMES = new String[] {
         "name",
         "number",
         "emails",
@@ -50,9 +54,13 @@ public class IccProvider extends ContentProvider {
         "_id"
     };
 
-    private static final int ADN = 1;
-    private static final int FDN = 2;
-    private static final int SDN = 3;
+    protected static final int ADN = 1;
+    protected static final int ADN_SUB = 2;
+    protected static final int FDN = 3;
+    protected static final int FDN_SUB = 4;
+    protected static final int SDN = 5;
+    protected static final int SDN_SUB = 6;
+    protected static final int ADN_ALL = 7;
 
     public static final String STR_TAG = "tag";
     public static final String STR_NUMBER = "number";
@@ -69,10 +77,13 @@ public class IccProvider extends ContentProvider {
 
     static {
         URL_MATCHER.addURI("icc", "adn", ADN);
+        URL_MATCHER.addURI("icc", "adn/subId/#", ADN_SUB);
         URL_MATCHER.addURI("icc", "fdn", FDN);
+        URL_MATCHER.addURI("icc", "fdn/subId/#", FDN_SUB);
         URL_MATCHER.addURI("icc", "sdn", SDN);
+        URL_MATCHER.addURI("icc", "sdn/subId/#", SDN_SUB);
+        URL_MATCHER.addURI("icc", "adn/adn_all", ADN_ALL);
     }
-
 
     @Override
     public boolean onCreate() {
@@ -82,27 +93,66 @@ public class IccProvider extends ContentProvider {
     @Override
     public Cursor query(Uri url, String[] projection, String selection,
             String[] selectionArgs, String sort) {
+        if (DBG) log("query");
+
         switch (URL_MATCHER.match(url)) {
             case ADN:
-                return loadFromEf(IccConstants.EF_ADN);
+                return loadFromEf(IccConstants.EF_ADN, SubscriptionManager.getDefaultSubId());
+
+            case ADN_SUB:
+                return loadFromEf(IccConstants.EF_ADN, getRequestSubId(url));
 
             case FDN:
-                return loadFromEf(IccConstants.EF_FDN);
+                return loadFromEf(IccConstants.EF_FDN, SubscriptionManager.getDefaultSubId());
+
+            case FDN_SUB:
+                return loadFromEf(IccConstants.EF_FDN, getRequestSubId(url));
 
             case SDN:
-                return loadFromEf(IccConstants.EF_SDN);
+                return loadFromEf(IccConstants.EF_SDN, SubscriptionManager.getDefaultSubId());
+
+            case SDN_SUB:
+                return loadFromEf(IccConstants.EF_SDN, getRequestSubId(url));
+
+            case ADN_ALL:
+                return loadAllSimContacts(IccConstants.EF_ADN);
 
             default:
                 throw new IllegalArgumentException("Unknown URL " + url);
         }
     }
 
+    private Cursor loadAllSimContacts(int efType) {
+        Cursor [] result;
+        List<SubInfoRecord> subInfoList = SubscriptionManager.getActiveSubInfoList();
+
+        if ((subInfoList == null) || (subInfoList.size() == 0)) {
+            result = new Cursor[0];
+        } else {
+            int subIdCount = subInfoList.size();
+            result = new Cursor[subIdCount];
+            long subId;
+
+            for (int i = 0; i < subIdCount; i++) {
+                subId = subInfoList.get(i).subId;
+                result[i] = loadFromEf(efType, subId);
+                Rlog.i(TAG,"ADN Records loaded for Subscription ::" + subId);
+            }
+        }
+
+        return new MergeCursor(result);
+    }
+
     @Override
     public String getType(Uri url) {
         switch (URL_MATCHER.match(url)) {
             case ADN:
+            case ADN_SUB:
             case FDN:
+            case FDN_SUB:
             case SDN:
+            case SDN_SUB:
+            case ADN_ALL:
                 return "vnd.android.cursor.dir/sim-contact";
 
             default:
@@ -115,6 +165,7 @@ public class IccProvider extends ContentProvider {
         Uri resultUri;
         int efType;
         String pin2 = null;
+        long subId;
 
         if (DBG) log("insert");
 
@@ -122,10 +173,23 @@ public class IccProvider extends ContentProvider {
         switch (match) {
             case ADN:
                 efType = IccConstants.EF_ADN;
+                subId = SubscriptionManager.getDefaultSubId();
+                break;
+
+            case ADN_SUB:
+                efType = IccConstants.EF_ADN;
+                subId = getRequestSubId(url);
                 break;
 
             case FDN:
                 efType = IccConstants.EF_FDN;
+                subId = SubscriptionManager.getDefaultSubId();
+                pin2 = initialValues.getAsString("pin2");
+                break;
+
+            case FDN_SUB:
+                efType = IccConstants.EF_FDN;
+                subId = getRequestSubId(url);
                 pin2 = initialValues.getAsString("pin2");
                 break;
 
@@ -149,7 +213,7 @@ public class IccProvider extends ContentProvider {
         mValues.put(STR_NEW_NUMBER,number);
         mValues.put(STR_NEW_EMAILS,emails);
         mValues.put(STR_NEW_ANRS,anrs);
-        boolean success = updateIccRecordInEf(efType, mValues, pin2);
+        boolean success = updateIccRecordInEf(efType, mValues, pin2, subId);
 
         if (!success) {
             return null;
@@ -161,8 +225,16 @@ public class IccProvider extends ContentProvider {
                 buf.append("adn/");
                 break;
 
+            case ADN_SUB:
+                buf.append("adn/subId/");
+                break;
+
             case FDN:
                 buf.append("fdn/");
+                break;
+
+            case FDN_SUB:
+                buf.append("fdn/subId/");
                 break;
         }
 
@@ -181,7 +253,7 @@ public class IccProvider extends ContentProvider {
         return resultUri;
     }
 
-    protected String normalizeValue(String inVal) {
+    private String normalizeValue(String inVal) {
         int len = inVal.length();
         // If name is empty in contact return null to avoid crash.
         if (len == 0) {
@@ -200,17 +272,29 @@ public class IccProvider extends ContentProvider {
     @Override
     public int delete(Uri url, String where, String[] whereArgs) {
         int efType;
+        long subId;
 
         if (DBG) log("delete");
-
         int match = URL_MATCHER.match(url);
         switch (match) {
             case ADN:
                 efType = IccConstants.EF_ADN;
+                subId = SubscriptionManager.getDefaultSubId();
+                break;
+
+            case ADN_SUB:
+                efType = IccConstants.EF_ADN;
+                subId = getRequestSubId(url);
                 break;
 
             case FDN:
                 efType = IccConstants.EF_FDN;
+                subId = SubscriptionManager.getDefaultSubId();
+                break;
+
+            case FDN_SUB:
+                efType = IccConstants.EF_FDN;
+                subId = getRequestSubId(url);
                 break;
 
             default:
@@ -232,13 +316,12 @@ public class IccProvider extends ContentProvider {
             String param = tokens[n];
             if (DBG) log("parsing '" + param + "'");
 
-            String[] pair = param.split("=", 2);
+            String[] pair = param.split("=");
 
             if (pair.length != 2) {
                 Rlog.e(TAG, "resolve: bad whereClause parameter: " + param);
                 continue;
             }
-
             String key = pair[0].trim();
             String val = pair[1].trim();
 
@@ -269,7 +352,7 @@ public class IccProvider extends ContentProvider {
         }
 
         if (DBG) log("delete mvalues= " + mValues);
-        boolean success = updateIccRecordInEf(efType, mValues, pin2);
+        boolean success = updateIccRecordInEf(efType, mValues, pin2, subId);
         if (!success) {
             return 0;
         }
@@ -280,8 +363,9 @@ public class IccProvider extends ContentProvider {
 
     @Override
     public int update(Uri url, ContentValues values, String where, String[] whereArgs) {
-        int efType;
         String pin2 = null;
+        int efType;
+        long subId;
 
         if (DBG) log("update");
 
@@ -289,10 +373,23 @@ public class IccProvider extends ContentProvider {
         switch (match) {
             case ADN:
                 efType = IccConstants.EF_ADN;
+                subId = SubscriptionManager.getDefaultSubId();
+                break;
+
+            case ADN_SUB:
+                efType = IccConstants.EF_ADN;
+                subId = getRequestSubId(url);
                 break;
 
             case FDN:
                 efType = IccConstants.EF_FDN;
+                subId = SubscriptionManager.getDefaultSubId();
+                pin2 = values.getAsString("pin2");
+                break;
+
+            case FDN_SUB:
+                efType = IccConstants.EF_FDN;
+                subId = getRequestSubId(url);
                 pin2 = values.getAsString("pin2");
                 break;
 
@@ -308,7 +405,7 @@ public class IccProvider extends ContentProvider {
         String newNumber = values.getAsString("newNumber");
         String[] newEmails = null;
         // TODO(): Update for email.
-        boolean success = updateIccRecordInEf(efType, values, pin2);
+        boolean success = updateIccRecordInEf(efType, values, pin2, subId);
 
         if (!success) {
             return 0;
@@ -318,15 +415,15 @@ public class IccProvider extends ContentProvider {
         return 1;
     }
 
-    private MatrixCursor loadFromEf(int efType) {
-        if (DBG) log("loadFromEf: efType=" + efType);
+    private MatrixCursor loadFromEf(int efType, long subId) {
+        if (DBG) log("loadFromEf: efType=" + efType + ", subscription=" + subId);
 
         List<AdnRecord> adnRecords = null;
         try {
             IIccPhoneBook iccIpb = IIccPhoneBook.Stub.asInterface(
                     ServiceManager.getService("simphonebook"));
             if (iccIpb != null) {
-                adnRecords = iccIpb.getAdnRecordsInEf(efType);
+                adnRecords = iccIpb.getAdnRecordsInEfForSubscriber(subId, efType);
             }
         } catch (RemoteException ex) {
             // ignore it
@@ -338,7 +435,7 @@ public class IccProvider extends ContentProvider {
             // Load the results
             final int N = adnRecords.size();
             final MatrixCursor cursor = new MatrixCursor(ADDRESS_BOOK_COLUMN_NAMES, N);
-            if (DBG) log("adnRecords.size=" + N);
+            log("adnRecords.size=" + N);
             for (int i = 0; i < N ; i++) {
                 loadRecord(adnRecords.get(i), cursor, i);
             }
@@ -351,16 +448,19 @@ public class IccProvider extends ContentProvider {
     }
 
     private boolean
-    updateIccRecordInEf(int efType, ContentValues values, String pin2) {
-        if (DBG) log("updateIccRecordInEf: efType=" + efType + ", values: "+ values);
+    updateIccRecordInEf(int efType, ContentValues values, String pin2, long subId) {
         boolean success = false;
+
+        if (DBG) log("updateIccRecordInEf: efType=" + efType +
+                    ", values: [ "+ values + " ], subId:" + subId);
 
         try {
             IIccPhoneBook iccIpb = IIccPhoneBook.Stub.asInterface(
                     ServiceManager.getService("simphonebook"));
             if (iccIpb != null) {
                 success = iccIpb
-                        .updateAdnRecordsWithContentValuesInEfBySearch(efType, values, pin2);
+                        .updateAdnRecordsWithContentValuesInEfBySearchUsingSubId(
+                            subId, efType, values, pin2);
             }
         } catch (RemoteException ex) {
             // ignore it
@@ -371,14 +471,13 @@ public class IccProvider extends ContentProvider {
         return success;
     }
 
-
     /**
      * Loads an AdnRecord into a MatrixCursor. Must be called with mLock held.
      *
      * @param record the ADN record to load from
      * @param cursor the cursor to receive the results
      */
-    protected void loadRecord(AdnRecord record, MatrixCursor cursor, int id) {
+    private void loadRecord(AdnRecord record, MatrixCursor cursor, int id) {
         if (!record.isEmpty()) {
             Object[] contact = new Object[5];
             String alphaTag = record.getAlphaTag();
@@ -414,8 +513,17 @@ public class IccProvider extends ContentProvider {
         }
     }
 
-    protected void log(String msg) {
+    private void log(String msg) {
         Rlog.d(TAG, "[IccProvider] " + msg);
     }
 
+    private long getRequestSubId(Uri url) {
+        if (DBG) log("getRequestSubId url: " + url);
+
+        try {
+            return Long.parseLong(url.getLastPathSegment());
+        } catch (NumberFormatException ex) {
+            throw new IllegalArgumentException("Unknown URL " + url);
+        }
+    }
 }

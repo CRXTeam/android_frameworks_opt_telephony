@@ -27,27 +27,10 @@ import java.util.List;
 /**
  * {@hide}
  */
-public class GsmCall extends Call {
+class GsmCall extends Call {
     /*************************** Instance Variables **************************/
 
     /*package*/ GsmCallTracker mOwner;
-
-
-    /***************************** Class Methods *****************************/
-
-    static State
-    stateFromDCState (DriverCall.State dcState) {
-        switch (dcState) {
-            case ACTIVE:        return State.ACTIVE;
-            case HOLDING:       return State.HOLDING;
-            case DIALING:       return State.DIALING;
-            case ALERTING:      return State.ALERTING;
-            case INCOMING:      return State.INCOMING;
-            case WAITING:       return State.WAITING;
-            default:            throw new RuntimeException ("illegal call state:" + dcState);
-        }
-    }
-
 
     /****************************** Constructors *****************************/
     /*package*/

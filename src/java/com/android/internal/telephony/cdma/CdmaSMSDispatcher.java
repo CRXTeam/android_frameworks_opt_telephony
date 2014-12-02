@@ -1,6 +1,4 @@
 /*
- * Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
- * Not a Contribution.
  * Copyright (C) 2008 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,30 +17,40 @@
 package com.android.internal.telephony.cdma;
 
 import android.app.Activity;
+import android.app.AppOpsManager;
 import android.app.PendingIntent;
 import android.app.PendingIntent.CanceledException;
+import android.content.BroadcastReceiver;
 import android.content.Intent;
 import android.content.Context;
+import android.net.Uri;
 import android.os.Message;
 import android.os.SystemProperties;
 import android.provider.Telephony.Sms;
+import android.provider.Telephony.Sms.Intents;
 import android.telephony.Rlog;
+import android.telephony.ServiceState;
 import android.telephony.SmsManager;
 
 import com.android.internal.telephony.GsmAlphabet;
 import com.android.internal.telephony.ImsSMSDispatcher;
 import com.android.internal.telephony.PhoneBase;
 import com.android.internal.telephony.SMSDispatcher;
+import com.android.internal.telephony.SmsApplication;
 import com.android.internal.telephony.SmsConstants;
 import com.android.internal.telephony.SmsHeader;
 import com.android.internal.telephony.SmsUsageMonitor;
 import com.android.internal.telephony.TelephonyProperties;
 import com.android.internal.telephony.cdma.sms.UserData;
+import com.android.internal.telephony.PhoneConstants;
+import android.telephony.TelephonyManager;
 
 import java.util.HashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class CdmaSMSDispatcher extends SMSDispatcher {
-    protected static final String TAG = "CdmaSMSDispatcher";
+    private static final String TAG = "CdmaSMSDispatcher";
     private static final boolean VDBG = false;
 
     public CdmaSMSDispatcher(PhoneBase phone, SmsUsageMonitor usageMonitor,
@@ -107,22 +115,44 @@ public class CdmaSMSDispatcher extends SMSDispatcher {
         SmsMessage.SubmitPdu pdu = SmsMessage.getSubmitPdu(
                 scAddr, destAddr, destPort, origPort, data, (deliveryIntent != null));
         HashMap map = getSmsTrackerMap(destAddr, scAddr, destPort, origPort, data, pdu);
-        SmsTracker tracker = getSmsTracker(map, sentIntent, deliveryIntent,
-                getFormat());
+        SmsTracker tracker = getSmsTracker(map, sentIntent, deliveryIntent, getFormat(),
+                null /*messageUri*/, false);
         sendSubmitPdu(tracker);
     }
 
     /** {@inheritDoc} */
     @Override
-    protected void sendText(String destAddr, String scAddr, String text,
-            PendingIntent sentIntent, PendingIntent deliveryIntent, int priority,
-            boolean isExpectMore, int validityPeriod) {
+    protected void sendText(String destAddr, String scAddr, String text, PendingIntent sentIntent,
+            PendingIntent deliveryIntent, Uri messageUri, String callingPkg,
+            int priority, boolean isExpectMore, int validityPeriod) {
         SmsMessage.SubmitPdu pdu = SmsMessage.getSubmitPdu(
                 scAddr, destAddr, text, (deliveryIntent != null), null, priority);
-        HashMap map = getSmsTrackerMap(destAddr, scAddr, text, pdu);
-        SmsTracker tracker = getSmsTracker(map, sentIntent,
-                deliveryIntent, getFormat(), isExpectMore);
-        sendSubmitPdu(tracker);
+        if (pdu != null) {
+            if (messageUri == null) {
+                if (SmsApplication.shouldWriteMessageForPackage(callingPkg, mContext)) {
+                    messageUri = writeOutboxMessage(
+                            getSubId(),
+                            destAddr,
+                            text,
+                            deliveryIntent != null,
+                            callingPkg);
+                }
+            } else {
+                moveToOutbox(getSubId(), messageUri, callingPkg);
+            }
+            HashMap map = getSmsTrackerMap(destAddr, scAddr, text, pdu);
+            SmsTracker tracker = getSmsTracker(map, sentIntent, deliveryIntent, getFormat(),
+                    messageUri, isExpectMore, validityPeriod);
+            sendSubmitPdu(tracker);
+        } else {
+            Rlog.e(TAG, "CdmaSMSDispatcher.sendText(): getSubmitPdu() returned null");
+        }
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    protected void injectSmsPdu(byte[] pdu, String format, PendingIntent receivedIntent) {
+        throw new IllegalStateException("This method must be called only on ImsSMSDispatcher");
     }
 
     /** {@inheritDoc} */
@@ -137,7 +167,8 @@ public class CdmaSMSDispatcher extends SMSDispatcher {
     protected void sendNewSubmitPdu(String destinationAddress, String scAddress,
             String message, SmsHeader smsHeader, int encoding,
             PendingIntent sentIntent, PendingIntent deliveryIntent, boolean lastPart,
-            int priority, boolean isExpectMore, int validityPeriod) {
+            int priority, boolean isExpectMore, int validityPeriod,
+            AtomicInteger unsentPartCount, AtomicBoolean anyPartFailed, Uri messageUri) {
         UserData uData = new UserData();
         uData.payloadStr = message;
         uData.userDataHeader = smsHeader;
@@ -164,21 +195,18 @@ public class CdmaSMSDispatcher extends SMSDispatcher {
 
         HashMap map = getSmsTrackerMap(destinationAddress, scAddress,
                 message, submitPdu);
-        SmsTracker tracker = getSmsTracker(map, sentIntent, deliveryIntent, getFormat(),
-                (!lastPart || isExpectMore));
+        SmsTracker tracker = getSmsTracker(map, sentIntent,
+                deliveryIntent, getFormat(), unsentPartCount, anyPartFailed, messageUri, smsHeader,
+                (!lastPart || isExpectMore), validityPeriod);
         sendSubmitPdu(tracker);
     }
 
     protected void sendSubmitPdu(SmsTracker tracker) {
         if (SystemProperties.getBoolean(TelephonyProperties.PROPERTY_INECM_MODE, false)) {
-            if (tracker.mSentIntent != null) {
-                try {
-                    tracker.mSentIntent.send(SmsManager.RESULT_ERROR_NO_SERVICE);
-                } catch (CanceledException ex) {}
-            }
             if (VDBG) {
                 Rlog.d(TAG, "Block SMS in Emergency Callback mode");
             }
+            tracker.onFailed(mContext, SmsManager.RESULT_ERROR_NO_SERVICE, 0/*errorCode*/);
             return;
         }
         sendRawPdu(tracker);
@@ -192,20 +220,72 @@ public class CdmaSMSDispatcher extends SMSDispatcher {
         // byte[] smsc = (byte[]) map.get("smsc");  // unused for CDMA
         byte[] pdu = (byte[]) map.get("pdu");
 
-        Message reply = obtainMessage(EVENT_SEND_SMS_COMPLETE, tracker);
-
         Rlog.d(TAG, "sendSms: "
-                +" isIms()="+isIms()
-                +" mRetryCount="+tracker.mRetryCount
-                +" mImsRetry="+tracker.mImsRetry
-                +" mMessageRef="+tracker.mMessageRef
-                +" SS=" +mPhone.getServiceState().getState());
+                + " isIms()=" + isIms()
+                + " mRetryCount=" + tracker.mRetryCount
+                + " mImsRetry=" + tracker.mImsRetry
+                + " mMessageRef=" + tracker.mMessageRef
+                + " SS=" + mPhone.getServiceState().getState());
+
+        // Send SMS via the carrier app.
+        BroadcastReceiver resultReceiver = new SMSDispatcherReceiver(tracker);
+
+        // Direct the intent to only the default carrier app.
+        Intent intent = new Intent(Intents.SMS_SEND_ACTION);
+        String carrierPackage = getCarrierAppPackageName(intent);
+        if (carrierPackage != null) {
+            intent.setPackage(getCarrierAppPackageName(intent));
+            intent.putExtra("pdu", pdu);
+            intent.putExtra("format", getFormat());
+            if (tracker.mSmsHeader != null && tracker.mSmsHeader.concatRef != null) {
+                SmsHeader.ConcatRef concatRef = tracker.mSmsHeader.concatRef;
+                intent.putExtra("concat.refNumber", concatRef.refNumber);
+                intent.putExtra("concat.seqNumber", concatRef.seqNumber);
+                intent.putExtra("concat.msgCount", concatRef.msgCount);
+            }
+            intent.addFlags(Intent.FLAG_RECEIVER_NO_ABORT);
+            Rlog.d(TAG, "Sending SMS by carrier app.");
+            mContext.sendOrderedBroadcast(intent, android.Manifest.permission.RECEIVE_SMS,
+                                          AppOpsManager.OP_RECEIVE_SMS, resultReceiver,
+                                          null, Activity.RESULT_CANCELED, null, null);
+        } else {
+            sendSmsByPstn(tracker);
+        }
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    protected void updateSmsSendStatus(int messageRef, boolean success) {
+        // This function should be defined in ImsDispatcher.
+        Rlog.e(TAG, "updateSmsSendStatus should never be called from here!");
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    protected void sendSmsByPstn(SmsTracker tracker) {
+        int ss = mPhone.getServiceState().getState();
+        // if sms over IMS is not supported on data and voice is not available...
+        if (!isIms() && ss != ServiceState.STATE_IN_SERVICE) {
+            tracker.onFailed(mContext, getNotInServiceError(ss), 0/*errorCode*/);
+            return;
+        }
+
+        Message reply = obtainMessage(EVENT_SEND_SMS_COMPLETE, tracker);
+        byte[] pdu = (byte[]) tracker.mData.get("pdu");
+
+        int currentDataNetwork = mPhone.getServiceState().getDataNetworkType();
+        boolean imsSmsDisabled = (currentDataNetwork == TelephonyManager.NETWORK_TYPE_EHRPD
+                    || (currentDataNetwork == TelephonyManager.NETWORK_TYPE_LTE
+                    && !mPhone.getServiceStateTracker().isConcurrentVoiceAndDataAllowed()))
+                    && mPhone.getServiceState().getVoiceNetworkType()
+                    == TelephonyManager.NETWORK_TYPE_1xRTT
+                    && mPhone.getState() != PhoneConstants.State.IDLE;
 
         // sms over cdma is used:
-        // if sms over IMS is not supported AND
-        // this is not a retry case after sms over IMS failed
-        // indicated by mImsRetry > 0
-        if (0 == tracker.mImsRetry && !isIms()) {
+        //   if sms over IMS is not supported AND
+        //   this is not a retry case after sms over IMS failed
+        //     indicated by mImsRetry > 0
+        if (0 == tracker.mImsRetry && !isIms() || imsSmsDisabled) {
             mCi.sendCdmaSms(pdu, reply);
         }
         // If sending SMS over IMS is not enabled, send SMS over cdma. Simply

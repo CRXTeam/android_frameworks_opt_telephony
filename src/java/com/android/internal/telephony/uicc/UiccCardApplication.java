@@ -25,6 +25,7 @@ import android.os.RegistrantList;
 import android.telephony.Rlog;
 
 import com.android.internal.telephony.CommandsInterface;
+import com.android.internal.telephony.PhoneConstants;
 import com.android.internal.telephony.uicc.IccCardApplicationStatus.AppState;
 import com.android.internal.telephony.uicc.IccCardApplicationStatus.AppType;
 import com.android.internal.telephony.uicc.IccCardApplicationStatus.PersoSubState;
@@ -48,13 +49,19 @@ public class UiccCardApplication {
     private static final int EVENT_QUERY_FACILITY_LOCK_DONE = 6;
     private static final int EVENT_CHANGE_FACILITY_LOCK_DONE = 7;
     private static final int EVENT_PIN2_PUK2_DONE = 8;
-    private int mPin1RetryCount = -1;
-    private int mPin2RetryCount = -1;
+
+    /**
+     * These values are for authContext (parameter P2) per 3GPP TS 31.102 (Section 7.1.2)
+     */
+    public static final int AUTH_CONTEXT_EAP_SIM = 128;
+    public static final int AUTH_CONTEXT_EAP_AKA = 129;
+    public static final int AUTH_CONTEXT_UNDEFINED = -1;
 
     private final Object  mLock = new Object();
     private UiccCard      mUiccCard; //parent
     private AppState      mAppState;
     private AppType       mAppType;
+    private int           mAuthContext;
     private PersoSubState mPersoSubState;
     private String        mAid;
     private String        mAppLabel;
@@ -86,6 +93,7 @@ public class UiccCardApplication {
         mUiccCard = uiccCard;
         mAppState = as.app_state;
         mAppType = as.app_type;
+        mAuthContext = getAuthContext(mAppType);
         mPersoSubState = as.perso_substate;
         mAid = as.aid;
         mAppLabel = as.app_label;
@@ -118,6 +126,7 @@ public class UiccCardApplication {
             AppState oldAppState = mAppState;
             PersoSubState oldPersoSubState = mPersoSubState;
             mAppType = as.app_type;
+            mAuthContext = getAuthContext(mAppType);
             mAppState = as.app_state;
             mPersoSubState = as.perso_substate;
             mAid = as.aid;
@@ -194,7 +203,7 @@ public class UiccCardApplication {
     }
 
     /** Assumes mLock is held. */
-    private void queryFdn() {
+    void queryFdn() {
         //This shouldn't change run-time. So needs to be called only once.
         int serviceClassX;
 
@@ -243,9 +252,6 @@ public class UiccCardApplication {
                 if (DBG) log("EVENT_CHANGE_FACILITY_FDN_DONE: " +
                         "mIccFdnEnabled=" + mIccFdnEnabled);
             } else {
-                if (ar.result != null) {
-                    parsePinPukErrorResult(ar, false);
-                }
                 attemptsRemaining = parsePinPukErrorResult(ar);
                 loge("Error change facility fdn with exception " + ar.exception);
             }
@@ -326,9 +332,6 @@ public class UiccCardApplication {
                 if (DBG) log( "EVENT_CHANGE_FACILITY_LOCK_DONE: mIccLockEnabled= "
                         + mIccLockEnabled);
             } else {
-                if (ar.result != null) {
-                    parsePinPukErrorResult(ar, true);
-                }
                 attemptsRemaining = parsePinPukErrorResult(ar);
                 loge("Error change facility lock with exception " + ar.exception);
             }
@@ -357,37 +360,6 @@ public class UiccCardApplication {
         }
     }
 
-    /**
-     * Parse the error response to obtain No of attempts remaining to unlock PIN1/PUK1
-     */
-    private void parsePinPukErrorResult(AsyncResult ar, boolean isPin1) {
-        int[] result = (int[]) ar.result;
-        int length = result.length;
-        mPin1RetryCount = -1;
-        mPin2RetryCount = -1;
-        if (length > 0) {
-            if (isPin1) {
-                mPin1RetryCount = result[0];
-            } else {
-                mPin2RetryCount = result[0];
-            }
-        }
-    }
-
-     /**
-     * @return No. of Attempts remaining to unlock PIN1/PUK1
-     */
-     public int getIccPin1RetryCount() {
-         return mPin1RetryCount;
-     }
-
-     /**
-      * @return No. of Attempts remaining to unlock PIN2/PUK2
-     */
-     public int getIccPin2RetryCount() {
-         return mPin2RetryCount;
-     }
-
     private Handler mHandler = new Handler() {
         @Override
         public void handleMessage(Message msg){
@@ -404,16 +376,11 @@ public class UiccCardApplication {
                 case EVENT_PIN2_PUK2_DONE:
                 case EVENT_CHANGE_PIN1_DONE:
                 case EVENT_CHANGE_PIN2_DONE:
+                    // a PIN/PUK/PIN2/PUK2 complete
                     // request has completed. ar.userObj is the response Message
-                    ar = (AsyncResult)msg.obj;
                     int attemptsRemaining = -1;
-                    if ((ar.exception != null) && (ar.result != null)) {
-                        if (msg.what == EVENT_PIN1_PUK1_DONE ||
-                                msg.what == EVENT_CHANGE_PIN1_DONE) {
-                            parsePinPukErrorResult(ar, true);
-                        } else {
-                            parsePinPukErrorResult(ar, false);
-                        }
+                    ar = (AsyncResult)msg.obj;
+                    if (ar.result != null) {
                         attemptsRemaining = parsePinPukErrorResult(ar);
                     }
                     Message response = (Message)ar.userObj;
@@ -470,6 +437,14 @@ public class UiccCardApplication {
 
     public void registerForReady(Handler h, int what, Object obj) {
         synchronized (mLock) {
+            for (int i = mReadyRegistrants.size() - 1; i >= 0 ; i--) {
+                Registrant  r = (Registrant) mReadyRegistrants.get(i);
+                Handler rH = r.getHandler();
+
+                if (rH != null && rH == h) {
+                    return;
+                }
+            }
             Registrant r = new Registrant (h, what, obj);
             mReadyRegistrants.add(r);
             notifyReadyRegistrantsIfNeeded(r);
@@ -604,6 +579,39 @@ public class UiccCardApplication {
         synchronized (mLock) {
             return mAppType;
         }
+    }
+
+    public int getAuthContext() {
+        synchronized (mLock) {
+            return mAuthContext;
+        }
+    }
+
+    /**
+     * Returns the authContext based on the type of UiccCard.
+     *
+     * @param appType the app type
+     * @return authContext corresponding to the type or AUTH_CONTEXT_UNDEFINED if appType not
+     * supported
+     */
+    private static int getAuthContext(AppType appType) {
+        int authContext;
+
+        switch (appType) {
+            case APPTYPE_SIM:
+                authContext = AUTH_CONTEXT_EAP_SIM;
+                break;
+
+            case APPTYPE_USIM:
+                authContext = AUTH_CONTEXT_EAP_AKA;
+                break;
+
+            default:
+                authContext = AUTH_CONTEXT_UNDEFINED;
+                break;
+        }
+
+        return authContext;
     }
 
     public PersoSubState getPersoSubState() {
@@ -883,6 +891,10 @@ public class UiccCardApplication {
         synchronized (mLock) {
             return mPin2State == PinState.PINSTATE_ENABLED_PERM_BLOCKED;
         }
+    }
+
+    protected UiccCard getUiccCard() {
+        return mUiccCard;
     }
 
     private void log(String msg) {

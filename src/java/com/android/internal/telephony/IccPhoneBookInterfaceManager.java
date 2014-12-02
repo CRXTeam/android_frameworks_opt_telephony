@@ -41,7 +41,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * SimPhoneBookInterfaceManager to provide an inter-process communication to
  * access ADN-like SIM records.
  */
-public abstract class IccPhoneBookInterfaceManager extends IIccPhoneBook.Stub {
+public abstract class IccPhoneBookInterfaceManager {
     protected static final boolean DBG = true;
 
     protected PhoneBase mPhone;
@@ -106,11 +106,10 @@ public abstract class IccPhoneBookInterfaceManager extends IIccPhoneBook.Stub {
         }
 
         private void notifyPending(AsyncResult ar) {
-            if (ar.userObj == null) {
-                return;
+            if (ar.userObj != null) {
+                AtomicBoolean status = (AtomicBoolean) ar.userObj;
+                status.set(true);
             }
-            AtomicBoolean status = (AtomicBoolean) ar.userObj;
-            status.set(true);
             mLock.notifyAll();
         }
     };
@@ -126,12 +125,12 @@ public abstract class IccPhoneBookInterfaceManager extends IIccPhoneBook.Stub {
         }
         mIs3gCard = false;
         mCurrentApp = null;
-        if (mRecords != null) {
-            mRecords.clear();
-        }
     }
 
     public void dispose() {
+        if (mRecords != null) {
+            mRecords.clear();
+        }
         cleanUp();
     }
 
@@ -148,6 +147,7 @@ public abstract class IccPhoneBookInterfaceManager extends IIccPhoneBook.Stub {
         int numApps = card.getNumApplications();
         boolean isCurrentAppFound = false;
         mIs3gCard = false;
+
         for (int i = 0; i < numApps; i++) {
             UiccCardApplication app = card.getApplicationIndex(i);
             if (app != null) {
@@ -197,11 +197,6 @@ public abstract class IccPhoneBookInterfaceManager extends IIccPhoneBook.Stub {
         }
     }
 
-    protected void publish() {
-        //NOTE service "simphonebook" added by IccSmsInterfaceManagerProxy
-        ServiceManager.addService("simphonebook", this);
-    }
-
     protected abstract void logd(String msg);
 
     protected abstract void loge(String msg);
@@ -226,7 +221,6 @@ public abstract class IccPhoneBookInterfaceManager extends IIccPhoneBook.Stub {
      * @param pin2 required to update EF_FDN, otherwise must be null
      * @return true for success
      */
-    @Override
     public boolean
     updateAdnRecordsInEfBySearch (int efid,
             String oldTag, String oldPhoneNumber,
@@ -264,7 +258,6 @@ public abstract class IccPhoneBookInterfaceManager extends IIccPhoneBook.Stub {
         return mSuccess;
     }
 
-    @Override
     public boolean updateAdnRecordsWithContentValuesInEfBySearch(int efid, ContentValues values,
             String pin2) {
 
@@ -324,7 +317,6 @@ public abstract class IccPhoneBookInterfaceManager extends IIccPhoneBook.Stub {
      * @param pin2 required to update EF_FDN, otherwise must be null
      * @return true for success
      */
-    @Override
     public boolean
     updateAdnRecordsInEfByIndex(int efid, String newTag,
             String newPhoneNumber, int index, String pin2) {
@@ -364,7 +356,6 @@ public abstract class IccPhoneBookInterfaceManager extends IIccPhoneBook.Stub {
      *            recordSizes[1]  is the total length of the EF file
      *            recordSizes[2]  is the number of records in the EF file
      */
-    @Override
     public abstract int[] getAdnRecordsSize(int efid);
 
     /**
@@ -376,7 +367,6 @@ public abstract class IccPhoneBookInterfaceManager extends IIccPhoneBook.Stub {
      * @param efid the EF id of a ADN-like ICC
      * @return List of AdnRecord
      */
-    @Override
     public List<AdnRecord> getAdnRecordsInEf(int efid) {
 
         if (mPhone.getContext().checkCallingOrSelfPermission(
@@ -441,37 +431,6 @@ public abstract class IccPhoneBookInterfaceManager extends IIccPhoneBook.Stub {
         return efid;
     }
 
-    @Override
-    public boolean updateUsimAdnRecordsInEfByIndex(int efid, String newTag, String newPhoneNumber,
-            String[] anrNumbers, String[] emails, int index, String pin2) {
-
-        if (mPhone.getContext().checkCallingOrSelfPermission(
-                android.Manifest.permission.WRITE_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
-            throw new SecurityException("Requires android.permission.WRITE_CONTACTS permission");
-        }
-
-        if (DBG)
-            logd("updateAdnRecordsInEfByIndex: efid=" + efid + " Index=" + index + " ==> " + "("
-                    + newTag + "," + newPhoneNumber + ")" + " pin2=" + pin2);
-        synchronized (mLock) {
-            checkThread();
-            mSuccess = false;
-            AtomicBoolean status = new AtomicBoolean(false);
-            Message response = mBaseHandler.obtainMessage(EVENT_UPDATE_DONE, status);
-            AdnRecord newAdn = new AdnRecord(newTag, newPhoneNumber, emails, anrNumbers);
-            efid = updateEfForIccType(efid);
-            if (mAdnCache != null) {
-                mAdnCache.updateUsimAdnByIndex(efid, newAdn, index, pin2, response);
-                waitForResult(status);
-            } else {
-                if (DBG)
-                    logd("Failure while trying to update by index due to uninitialised adncache");
-            }
-        }
-        return mSuccess;
-    }
-
-    @Override
     public int getAdnCount() {
         int adnCount = 0;
         if (mAdnCache != null) {
@@ -486,7 +445,6 @@ public abstract class IccPhoneBookInterfaceManager extends IIccPhoneBook.Stub {
         return adnCount;
     }
 
-    @Override
     public int getAnrCount() {
         int anrCount = 0;
         if (mAdnCache != null) {
@@ -497,7 +455,6 @@ public abstract class IccPhoneBookInterfaceManager extends IIccPhoneBook.Stub {
         return anrCount;
     }
 
-    @Override
     public int getEmailCount() {
         int emailCount = 0;
         if (mAdnCache != null) {
@@ -508,7 +465,6 @@ public abstract class IccPhoneBookInterfaceManager extends IIccPhoneBook.Stub {
         return emailCount;
     }
 
-    @Override
     public int getSpareAnrCount() {
         int spareAnrCount = 0;
         if (mAdnCache != null) {
@@ -519,7 +475,6 @@ public abstract class IccPhoneBookInterfaceManager extends IIccPhoneBook.Stub {
         return spareAnrCount;
     }
 
-    @Override
     public int getSpareEmailCount() {
         int spareEmailCount = 0;
         if (mAdnCache != null) {

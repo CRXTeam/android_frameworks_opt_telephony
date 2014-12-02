@@ -53,12 +53,11 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
     private int mEmailTagNumberInIap = 0;
     private boolean mAnrPresentInIap = false;
     private int mAnrTagNumberInIap = 0;
+    private boolean mIapPresent = false;
     private Map<Integer, ArrayList<byte[]>> mIapFileRecord;
     private Map<Integer, ArrayList<byte[]>> mEmailFileRecord;
     private Map<Integer, ArrayList<byte[]>> mAnrFileRecord;
     private ArrayList<Integer> mAdnLengthList = null;
-    private Map<Integer, ArrayList<String>> mEmailsForAdnRec;
-    private Map<Integer, ArrayList<String>> mAnrsForAdnRec;
     private int mPendingExtLoads;
     private boolean mSuccess = false;
     private boolean mRefreshCache = false;
@@ -216,16 +215,10 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
 
     private void readEmailFileAndWait(int recNum) {
         Map <Integer,Integer> fileIds;
-        if (mPbrFile == null) {
-            Rlog.e(LOG_TAG, "mPbrFile is NULL, exiting from readEmailFileAndWait");
-            return;
-        } else {
-            fileIds = mPbrFile.mFileIds.get(recNum);
-        }
+        fileIds = mPbrFile.mFileIds.get(recNum);
         if (fileIds == null) return;
 
         if (fileIds.containsKey(USIM_EFEMAIL_TAG)) {
-            int efid = fileIds.get(USIM_EFEMAIL_TAG);
             // Check if the EFEmail is a Type 1 file or a type 2 file.
             // If mEmailPresentInIap is true, its a type 2 file.
             // So we read the IAP file and then read the email records.
@@ -239,18 +232,32 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
                 mFh.loadEFLinearFixedAll(fileIds.get(USIM_EFEMAIL_TAG),
                         obtainMessage(EVENT_EMAIL_LOAD_DONE, recNum));
 
-            } else {
-                mFh.loadEFLinearFixedPart(fileIds.get(USIM_EFEMAIL_TAG),
-                        getValidRecordNums(recNum), obtainMessage(EVENT_EMAIL_LOAD_DONE, recNum));
-            }
-            // Read the EFEmail file.
-            log("readEmailFileAndWait email efid is : " + fileIds.get(USIM_EFEMAIL_TAG));
+                log("readEmailFileAndWait email efid is : " + fileIds.get(USIM_EFEMAIL_TAG));
+                try {
+                    mLock.wait();
+                } catch (InterruptedException e) {
+                    Rlog.e(LOG_TAG, "Interrupted Exception in readEmailFileAndWait");
+                }
 
-            try {
-                mLock.wait();
-            } catch (InterruptedException e) {
-                Rlog.e(LOG_TAG, "Interrupted Exception in readEmailFileAndWait");
+            } else {
+                // Read all Email files per Record
+                for (int efid: mPbrFile.mEmailFileIds.get(recNum)) {
+                    mFh.loadEFLinearFixedPart(efid, getValidRecordNums(recNum),
+                        obtainMessage(EVENT_EMAIL_LOAD_DONE, recNum));
+
+                    log("readEmailFileAndWait email efid is : " + efid + " recNum:" + recNum);
+                    try {
+                        mLock.wait();
+                    } catch (InterruptedException e) {
+                        Rlog.e(LOG_TAG, "Interrupted Exception in readEmailFileAndWait");
+                    }
+                }
             }
+
+            for (int m = 0; m < mEmailFileRecord.get(recNum).size(); m++) {
+                mEmailFlagsRecord[recNum].add(0);
+            }
+            mEmailFlags.put(recNum, mEmailFlagsRecord[recNum]);
 
             if (!hasRecordIn(mEmailFileRecord, recNum)) {
                 Rlog.e(LOG_TAG, "Error: Email file is empty");
@@ -272,7 +279,6 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
         if (fileIds == null || fileIds.isEmpty())
             return;
         if (fileIds.containsKey(USIM_EFANR_TAG)) {
-            int efid = fileIds.get(USIM_EFANR_TAG);
             if (mAnrPresentInIap) {
                 readIapFileAndWait(fileIds.get(USIM_EFIAP_TAG), recNum);
                 if (!hasRecordIn(mIapFileRecord, recNum)) {
@@ -281,16 +287,31 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
                 }
                 mFh.loadEFLinearFixedAll(fileIds.get(USIM_EFANR_TAG),
                         obtainMessage(EVENT_ANR_LOAD_DONE, recNum));
+                log("readAnrFileAndWait anr efid is : " + fileIds.get(USIM_EFANR_TAG));
+                try {
+                    mLock.wait();
+                } catch (InterruptedException e) {
+                    Rlog.e(LOG_TAG, "Interrupted Exception in readEmailFileAndWait");
+                }
             } else {
-                mFh.loadEFLinearFixedPart(fileIds.get(USIM_EFANR_TAG), getValidRecordNums(recNum),
+                // Read all Anr files for each Adn Record
+                for (int efid: mPbrFile.mAnrFileIds.get(recNum)) {
+                    mFh.loadEFLinearFixedPart(efid, getValidRecordNums(recNum),
                         obtainMessage(EVENT_ANR_LOAD_DONE, recNum));
+                    log("readAnrFileAndWait anr efid is : " + efid + " recNum:" + recNum);
+                    try {
+                        mLock.wait();
+                    } catch (InterruptedException e) {
+                        Rlog.e(LOG_TAG, "Interrupted Exception in readEmailFileAndWait");
+                    }
+                }
             }
-            log("readAnrFileAndWait anr efid is : " + fileIds.get(USIM_EFANR_TAG));
-            try {
-                mLock.wait();
-            } catch (InterruptedException e) {
-                Rlog.e(LOG_TAG, "Interrupted Exception in readEmailFileAndWait");
+
+            for (int m = 0; m < mAnrFileRecord.get(recNum).size(); m++) {
+                mAnrFlagsRecord[recNum].add(0);
             }
+            mAnrFlags.put(recNum, mAnrFlagsRecord[recNum]);
+
             if (!hasRecordIn(mAnrFileRecord, recNum)) {
                 Rlog.e(LOG_TAG, "Error: Anr file is empty");
                 return;
@@ -310,15 +331,19 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
         }
     }
 
-    public boolean updateEmailFile(int adnRecNum, String oldEmail, String newEmail) {
+    public boolean updateEmailFile(int adnRecNum, String oldEmail, String newEmail, int efidIndex) {
         int pbrIndex = getPbrIndexBy(adnRecNum - 1);
-        int efid = getEfidByTag(pbrIndex, USIM_EFEMAIL_TAG);
+        int efid = getEfidByTag(pbrIndex, USIM_EFEMAIL_TAG, efidIndex);
         if (oldEmail == null)
             oldEmail = "";
         if (newEmail == null)
             newEmail = "";
         String emails = oldEmail + "," + newEmail;
         mSuccess = false;
+
+        log("updateEmailFile oldEmail : " + oldEmail + " newEmail:" + newEmail + " emails:"
+                    + emails + " efid" + efid + " adnRecNum: " + adnRecNum);
+
         if (efid == -1)
             return mSuccess;
         if (mEmailPresentInIap && (TextUtils.isEmpty(oldEmail) && !TextUtils.isEmpty(newEmail))) {
@@ -333,8 +358,6 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
             mSuccess = true;
         }
         if (mSuccess) {
-            log("updateEmailFile oldEmail : " + oldEmail + " newEmail:" + newEmail + " emails:"
-                    + emails + " efid" + efid + " adnRecNum: " + adnRecNum);
             synchronized (mLock) {
                 mFh.getEFLinearRecordSize(efid,
                         obtainMessage(EVENT_EF_EMAIL_RECORD_SIZE_DONE, adnRecNum, efid, emails));
@@ -352,15 +375,17 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
         return mSuccess;
     }
 
-    public boolean updateAnrFile(int adnRecNum, String oldAnr, String newAnr) {
+    public boolean updateAnrFile(int adnRecNum, String oldAnr, String newAnr, int efidIndex) {
         int pbrIndex = getPbrIndexBy(adnRecNum - 1);
-        int efid = getEfidByTag(pbrIndex, USIM_EFANR_TAG);
+        int efid = getEfidByTag(pbrIndex, USIM_EFANR_TAG, efidIndex);
         if (oldAnr == null)
             oldAnr = "";
         if (newAnr == null)
             newAnr = "";
         String anrs = oldAnr + "," + newAnr;
         mSuccess = false;
+        log("updateAnrFile oldAnr : " + oldAnr + ", newAnr:" + newAnr + " anrs:" + anrs + ", efid"
+                + efid + ", adnRecNum: " + adnRecNum);
         if (efid == -1)
             return mSuccess;
         if (mAnrPresentInIap && (TextUtils.isEmpty(oldAnr) && !TextUtils.isEmpty(newAnr))) {
@@ -374,8 +399,6 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
         } else {
             mSuccess = true;
         }
-        log("updateAnrFile oldAnr : " + oldAnr + ", newAnr:" + newAnr + " anrs:" + anrs + ", efid"
-                + efid + ", adnRecNum: " + adnRecNum);
         synchronized (mLock) {
             mFh.getEFLinearRecordSize(efid,
                     obtainMessage(EVENT_EF_ANR_RECORD_SIZE_DONE, adnRecNum, efid, anrs));
@@ -394,7 +417,7 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
 
     private boolean updateIapFile(int adnRecNum, String oldValue, String newValue, int tag) {
         int pbrIndex = getPbrIndexBy(adnRecNum - 1);
-        int efid = getEfidByTag(pbrIndex, USIM_EFIAP_TAG);
+        int efid = getEfidByTag(pbrIndex, USIM_EFIAP_TAG, 0);
         mSuccess = false;
         int recordNumber = -1;
         if (efid == -1)
@@ -425,13 +448,24 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
         return mSuccess;
     }
 
-    private int getEfidByTag(int recNum, int tag) {
+    private int getEfidByTag(int recNum, int tag, int efidIndex) {
         Map<Integer, Integer> fileIds;
         int efid = -1;
+        int numRecs = mPbrFile.mFileIds.size();
+
         fileIds = mPbrFile.mFileIds.get(recNum);
         if (fileIds == null)
             return -1;
-        if (fileIds.containsKey(tag)) {
+
+        if (!fileIds.containsKey(tag)) {
+            return -1;
+        }
+
+        if (!mEmailPresentInIap && USIM_EFEMAIL_TAG == tag) {
+            efid = mPbrFile.mEmailFileIds.get(recNum).get(efidIndex);
+        } else if (!mAnrPresentInIap && USIM_EFANR_TAG == tag) {
+            efid = mPbrFile.mAnrFileIds.get(recNum).get(efidIndex);
+        } else {
             efid = fileIds.get(tag);
         }
         return efid;
@@ -443,7 +477,6 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
         for (int i = 0; i < len; i++) {
             size += mAdnLengthList.get(i);
             if (adnIndex < size) {
-                log("getPbrIndexBy  adnIndex: " + adnIndex + " PbrIndex: " + i);
                 return i;
             }
         }
@@ -495,17 +528,19 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
                 if (recNum > 0) {
                     String[] emails = new String[1];
                     // SIM record numbers are 1 based
-                    emails[0] = readEmailRecord(recNum - 1, pbrIndex);
+                    emails[0] = readEmailRecord(recNum - 1, pbrIndex, 0);
                     adnRecIndex = i + getInitIndexBy(pbrIndex);
                     AdnRecord rec = mPhoneBookRecords.get(adnRecIndex);
                     if (rec != null && (!TextUtils.isEmpty(emails[0]))) {
                         rec.setEmails(emails);
                         mPhoneBookRecords.set(adnRecIndex, rec);
-
                         mEmailFlags.get(pbrIndex).set(recNum - 1, 1);
                     }
                 }
             }
+
+            log("updatePhoneAdnRecordWithEmail: no need to parse type1 EMAIL file");
+            return;
         }
 
         // ICC cards can be made such that they have an IAP file but all
@@ -515,25 +550,8 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
         int len = mAdnLengthList.get(pbrIndex);
         // Type 1 file, the number of records is the same as the number of
         // records in the ADN file.
-        if (mEmailsForAdnRec == null || !mEmailPresentInIap) {
+        if (!mEmailPresentInIap) {
             parseType1EmailFile(len, pbrIndex);
-        }
-        for (int i = getInitIndexBy(pbrIndex); i < numAdnRecs + getInitIndexBy(pbrIndex); i++) {
-            ArrayList<String> emailList = null;
-            try {
-                emailList = mEmailsForAdnRec.get(i);
-            } catch (IndexOutOfBoundsException e) {
-                break;
-            }
-            if (emailList == null) continue;
-
-            AdnRecord rec = mPhoneBookRecords.get(i);
-            if (rec != null) {
-                String[] emails = new String[emailList.size()];
-                System.arraycopy(emailList.toArray(), 0, emails, 0, emailList.size());
-                rec.setEmails(emails);
-                mPhoneBookRecords.set(i, rec);
-            }
         }
     }
 
@@ -560,7 +578,7 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
                 if (recNum > 0) {
                     String[] anrs = new String[1];
                     // SIM record numbers are 1 based
-                    anrs[0] = readAnrRecord(recNum - 1, pbrIndex);
+                    anrs[0] = readAnrRecord(recNum - 1, pbrIndex, 0);
                     adnRecIndex = i + getInitIndexBy(pbrIndex);
                     AdnRecord rec = mPhoneBookRecords.get(adnRecIndex);
                     if (rec != null && (!TextUtils.isEmpty(anrs[0]))) {
@@ -570,6 +588,9 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
 
                 }
             }
+
+            log("updatePhoneAdnRecordWithAnr: no need to parse type1 ANR file");
+            return;
         }
 
         // ICC cards can be made such that they have an IAP file but all
@@ -578,19 +599,86 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
 
         // Type 1 file, the number of records is the same as the number of
         // records in the ADN file.
-        if (mAnrsForAdnRec == null || !mAnrPresentInIap) {
+        if (!mAnrPresentInIap) {
             parseType1AnrFile(numAdnRecs, pbrIndex);
         }
-        for (int i = getInitIndexBy(pbrIndex); i < numAdnRecs + getInitIndexBy(pbrIndex); i++) {
-            ArrayList<String> anrList = null;
-            try {
-                anrList = mAnrsForAdnRec.get(i);
-            } catch (IndexOutOfBoundsException e) {
-                break;
+    }
+
+    void parseType1EmailFile(int numRecs, int pbrIndex) {
+        byte[] emailRec = null;
+        int count;
+        int numEmailFiles = mPbrFile.mEmailFileIds.get(pbrIndex).size();
+        ArrayList<String> emailList = new ArrayList<String>();
+        int adnInitIndex = getInitIndexBy(pbrIndex);
+
+        if (!hasRecordIn(mEmailFileRecord, pbrIndex))
+            return;
+
+        log("parseType1EmailFile: pbrIndex is: " + pbrIndex + ", numRecs is: " + numRecs);
+        for (int i = 0; i < numRecs; i++) {
+            count = 0;
+            emailList.clear();
+
+            for (int j = 0; j < numEmailFiles; j++) {
+                String email = readEmailRecord(i, pbrIndex, j*numRecs);
+                emailList.add(email);
+                if (TextUtils.isEmpty(email)) {
+                    email = "";
+                    continue;
+                }
+
+                count++;
+                //Type1 Email file, no need for mEmailFlags
+                mEmailFlags.get(pbrIndex).set(i+j*numRecs, 1);
             }
-            if (anrList == null)
+
+            // All Email files is null
+            if (count == 0) {
                 continue;
-            AdnRecord rec = mPhoneBookRecords.get(i);
+            }
+
+            AdnRecord rec = mPhoneBookRecords.get(i+adnInitIndex);
+            if (rec != null) {
+                String[] emails = new String[emailList.size()];
+                System.arraycopy(emailList.toArray(), 0, emails, 0, emailList.size());
+                rec.setAdditionalNumbers(emails);
+                mPhoneBookRecords.set(i, rec);
+            }
+        }
+    }
+
+    void parseType1AnrFile(int numRecs, int pbrIndex) {
+        int count;
+        int numAnrFiles = mPbrFile.mAnrFileIds.get(pbrIndex).size();
+        ArrayList<String> anrList = new ArrayList<String>();
+        int adnInitIndex = getInitIndexBy(pbrIndex);
+
+        if (!hasRecordIn(mAnrFileRecord, pbrIndex))
+            return;
+        log("parseType1AnrFile: pbrIndex is: " + pbrIndex + ", numRecs is: " + numRecs +
+                ", numAnrFiles " + numAnrFiles);
+        for (int i = 0; i < numRecs; i++) {
+            count = 0;
+            anrList.clear();
+            for (int j = 0; j < numAnrFiles; j++) {
+                String anr = readAnrRecord(i, pbrIndex, j*numRecs);
+                anrList.add(anr);
+                if (TextUtils.isEmpty(anr)) {
+                    anr = "";
+                    continue;
+                }
+
+                count++;
+                //Fix Me: For type1 this is not necessary
+                mAnrFlags.get(pbrIndex).set(i+j*numRecs, 1);
+            }
+
+            // All anr files is null
+            if (count == 0) {
+                continue;
+            }
+
+            AdnRecord rec = mPhoneBookRecords.get(i+adnInitIndex);
             if (rec != null) {
                 String[] anrs = new String[anrList.size()];
                 System.arraycopy(anrList.toArray(), 0, anrs, 0, anrList.size());
@@ -600,92 +688,12 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
         }
     }
 
-    void parseType1EmailFile(int numRecs, int pbrIndex) {
-        mEmailsForAdnRec = new HashMap<Integer, ArrayList<String>>();
-        byte[] emailRec = null;
-        int adnRecIndex;
-        if (!hasRecordIn(mEmailFileRecord, pbrIndex))
-            return;
-        for (int i = 0; i < numRecs; i++) {
-            try {
-                log("parseType1EmailFile: pbrIndex is: " + pbrIndex + ", i is: " + i);
-                emailRec = mEmailFileRecord.get(pbrIndex).get(i);
-            } catch (IndexOutOfBoundsException e) {
-                Rlog.e(LOG_TAG, "Error: Improper ICC card: No email record for ADN, continuing");
-                break;
-            }
-            String email = readEmailRecord(i, pbrIndex);
-
-            if (email == null || email.equals("")) {
-                continue;
-            }
-
-            int emailRecNum = emailRec[emailRec.length - 1];
-
-            if (mEmailPresentInIap) {
-                if (emailRecNum == -1) {
-                    continue;
-                }
-                adnRecIndex = emailRecNum - 1 + getInitIndexBy(pbrIndex);
-            } else {
-                adnRecIndex = i + getInitIndexBy(pbrIndex);
-            }
-            // SIM record numbers are 1 based.
-            ArrayList<String> val = mEmailsForAdnRec.get(adnRecIndex);
-            if (val == null) {
-                val = new ArrayList<String>();
-            }
-            val.add(email);
-            // SIM record numbers are 1 based.
-            mEmailsForAdnRec.put(adnRecIndex, val);
-
-            mEmailFlags.get(pbrIndex).set(i, 1);
-        }
-    }
-
-    void parseType1AnrFile(int numRecs, int pbrIndex) {
-        mAnrsForAdnRec = new HashMap<Integer, ArrayList<String>>();
-        byte[] anrRec = null;
-        int adnRecIndex;
-        if (!hasRecordIn(mAnrFileRecord, pbrIndex))
-            return;
-        for (int i = 0; i < numRecs; i++) {
-            try {
-                anrRec = mAnrFileRecord.get(pbrIndex).get(i);
-            } catch (IndexOutOfBoundsException e) {
-                Rlog.e(LOG_TAG, "Error: Improper ICC card: No anr record for ADN, continuing");
-                break;
-            }
-            String anr = readAnrRecord(i, pbrIndex);
-            if (anr == null || anr.equals("")) {
-                continue;
-            }
-            int anrRecNum = anrRec[anrRec.length - 1];
-            if (mAnrPresentInIap) {
-                if (anrRecNum == -1) {
-                    continue;
-                }
-                adnRecIndex = anrRecNum - 1 + getInitIndexBy(pbrIndex);
-            } else {
-                adnRecIndex = i + getInitIndexBy(pbrIndex);
-            }
-            ArrayList<String> val = mAnrsForAdnRec.get(adnRecIndex);
-            if (val == null) {
-                val = new ArrayList<String>();
-            }
-            val.add(anr);
-            mAnrsForAdnRec.put(adnRecIndex, val);
-
-            mAnrFlags.get(pbrIndex).set(i, 1);
-        }
-    }
-
-    private String readEmailRecord(int recNum, int pbrIndex) {
+    private String readEmailRecord(int recNum, int pbrIndex, int offSet) {
         byte[] emailRec = null;
         if (!hasRecordIn(mEmailFileRecord, pbrIndex))
             return null;
         try {
-            emailRec = mEmailFileRecord.get(pbrIndex).get(recNum);
+            emailRec = mEmailFileRecord.get(pbrIndex).get(recNum + offSet);
         } catch (IndexOutOfBoundsException e) {
             return null;
         }
@@ -695,18 +703,20 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
         return email;
     }
 
-    private String readAnrRecord(int recNum, int pbrIndex) {
+    private String readAnrRecord(int recNum, int pbrIndex, int offSet) {
         byte[] anrRec = null;
         if (!hasRecordIn(mAnrFileRecord, pbrIndex))
             return null;
         try {
-            anrRec = mAnrFileRecord.get(pbrIndex).get(recNum);
+            anrRec = mAnrFileRecord.get(pbrIndex).get(recNum + offSet);
         } catch (IndexOutOfBoundsException e) {
+            Rlog.e(LOG_TAG, "Error: Improper ICC card: No anr record for ADN, continuing");
             return null;
         }
         int numberLength = 0xff & anrRec[1];
         if (numberLength > MAX_NUMBER_SIZE_BYTES) {
-            log("Invalid number length in anr record");
+            //log("Invalid number length[" + numberLength + "] in anr record: " + recNum +
+            //        " pbrIndex:" + pbrIndex + " offSet:" + offSet);
             return "";
         }
         return PhoneNumberUtils.calledPartyBCDToString(anrRec, 2, numberLength);
@@ -714,12 +724,7 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
 
     private void readAdnFileAndWait(int recNum) {
         Map <Integer,Integer> fileIds;
-        if (mPbrFile == null) {
-            Rlog.e(LOG_TAG, "mPbrFile is NULL, exiting from readAdnFileAndWait");
-            return;
-        } else {
-            fileIds = mPbrFile.mFileIds.get(recNum);
-        }
+        fileIds = mPbrFile.mFileIds.get(recNum);
         if (fileIds == null || fileIds.isEmpty()) return;
 
 
@@ -763,11 +768,12 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
             } else {
                 int recsSize = mEmailFileRecord.get(pbrIndex).size();
                 log("getEmailRecNumber recsSize is: " + recsSize);
-                for (int i = 0; i < recsSize; i++) {
-                    if ("".equals(oldEmail)) {
-                        String emailRecord = readEmailRecord(i, pbrIndex);
-                        if (emailRecord != null && emailRecord.equals(oldEmail)) {
-                            log("the email record index is :" + (i + 1));
+                if (TextUtils.isEmpty(oldEmail)) {
+                    for (int i = 0; i < recsSize; i++) {
+                        String emailRecord = readEmailRecord(i, pbrIndex, 0);
+                        if (TextUtils.isEmpty(emailRecord)) {
+                            log("getEmailRecNumber: Got empty record.Email record num is :" +
+                                     (i + 1));
                             return i + 1;
                         }
                     }
@@ -777,7 +783,7 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
             recordNumber = recordIndex + 1;
             return recordNumber;
         }
-        log("no email record index found");
+        log("getEmailRecNumber: no email record index found");
         return recordNumber;
     }
 
@@ -797,14 +803,16 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
             }
             if (record != null && record[mAnrTagNumberInIap] > 0) {
                 recordNumber = record[mAnrTagNumberInIap];
+                log("getAnrRecNumber: recnum from iap is :" + recordNumber);
                 return recordNumber;
             } else {
                 int recsSize = mAnrFileRecord.get(pbrIndex).size();
-                if ("".equals(oldAnr)) {
+                log("getAnrRecNumber: anr record size is :" + recsSize);
+                if (TextUtils.isEmpty(oldAnr)) {
                     for (int i = 0; i < recsSize; i++) {
-                        String anrRecord = readAnrRecord(i, pbrIndex);
-                        if (anrRecord != null && anrRecord.equals(oldAnr)) {
-                            log("the anr record index is :" + (i + 1));
+                        String anrRecord = readAnrRecord(i, pbrIndex, 0);
+                        if (TextUtils.isEmpty(anrRecord)) {
+                            log("getAnrRecNumber: Empty anr record. Anr record num is :" + (i + 1));
                             return i + 1;
                         }
                     }
@@ -814,14 +822,14 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
             recordNumber = recordIndex + 1;
             return recordNumber;
         }
-        log("no anr record index found");
+        log("getAnrRecNumber: no anr record index found");
         return recordNumber;
     }
 
     private byte[] buildEmailData(int length, int adnRecIndex, String email) {
         byte[] data = new byte[length];
-        for (byte mData : data) {
-            mData = (byte) 0xff;
+        for (int i=0; i<length; i++ ) {
+            data[i]= (byte)0xff;
         }
         if (TextUtils.isEmpty(email)) {
             log("[buildEmailData] Empty email record");
@@ -889,7 +897,6 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
         log("pbr index is " + pbrIndex + ", initAdnIndex is " + initAdnIndex);
         for (int i = 0; i < mAdnLengthList.get(pbrIndex); i++) {
             recordNums.add(i + 1);
-            log("valid recnum is " + (i + 1));
         }
         // Need to read at least one record to inint
         // variable mIapFileRecord, mEmailFileRecord,mAnrFileRecord
@@ -916,6 +923,8 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
         int recordIndex;
         int[] recordSize;
         int recordNumber;
+        int efidIndex;
+        int actualRecNumber;
         String oldAnr = null;
         String newAnr = null;
         String oldEmail = null;
@@ -963,17 +972,18 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
                 log("Loading USIM Email records done");
                 ar = (AsyncResult) msg.obj;
                 pbrIndex = (Integer) ar.userObj;
-                if (ar.exception == null) {
-                    mEmailFileRecord.put(pbrIndex, (ArrayList<byte[]>) ar.result);
+                if (ar.exception == null && mPbrFile != null) {
+                    ArrayList<byte[]> tmpList = mEmailFileRecord.get(pbrIndex);
+                    if (tmpList == null) {
+                        mEmailFileRecord.put(pbrIndex, (ArrayList<byte[]>) ar.result);
+                    } else {
+                        tmpList.addAll((ArrayList<byte[]>) ar.result);
+                        mEmailFileRecord.put(pbrIndex, tmpList);
+                    }
 
                     log("handlemessage EVENT_EMAIL_LOAD_DONE size is: "
                             + mEmailFileRecord.get(pbrIndex).size());
-                    for (int m = 0; m < mEmailFileRecord.get(pbrIndex).size(); m++) {
-                        mEmailFlagsRecord[pbrIndex].add(0);
-                    }
-                    mEmailFlags.put(pbrIndex, mEmailFlagsRecord[pbrIndex]);
                 }
-
                 synchronized (mLock) {
                     mLock.notify();
                 }
@@ -982,15 +992,17 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
                 log("Loading USIM Anr records done");
                 ar = (AsyncResult) msg.obj;
                 pbrIndex = (Integer) ar.userObj;
-                if (ar.exception == null) {
-                    mAnrFileRecord.put(pbrIndex, (ArrayList<byte[]>) ar.result);
+                if (ar.exception == null && mPbrFile != null) {
+                    ArrayList<byte[]> tmp = mAnrFileRecord.get(pbrIndex);
+                    if (tmp == null) {
+                        mAnrFileRecord.put(pbrIndex, (ArrayList<byte[]>) ar.result);
+                    } else {
+                        tmp.addAll((ArrayList<byte[]>) ar.result);
+                        mAnrFileRecord.put(pbrIndex, tmp);
+                    }
 
                     log("handlemessage EVENT_ANR_LOAD_DONE size is: "
                             + mAnrFileRecord.get(pbrIndex).size());
-                    for (int m = 0; m < mAnrFileRecord.get(pbrIndex).size(); m++) {
-                        mAnrFlagsRecord[pbrIndex].add(0);
-                    }
-                    mAnrFlags.put(pbrIndex, mAnrFlagsRecord[pbrIndex]);
                 }
                 synchronized (mLock) {
                     mLock.notify();
@@ -1027,12 +1039,28 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
                     return;
                 }
                 data = buildEmailData(recordSize[0], adnRecIndex, newEmail);
+
+                actualRecNumber = recordNumber;
+                if (!mEmailPresentInIap) {
+                    efidIndex = mPbrFile.mEmailFileIds.get(getPbrIndexBy(
+                                adnRecIndex)).indexOf(efid);
+                    if (efidIndex == -1) {
+                        log("wrong efid index:" + efid );
+                        return;
+                    }
+
+                    actualRecNumber = recordNumber +
+                            efidIndex * mAdnLengthList.get(getPbrIndexBy(adnRecIndex));
+                    log("EMAIL index:" + efidIndex + " efid:" + efid +
+                        " actual RecNumber:" + actualRecNumber);
+                }
+
                 mFh.updateEFLinearFixed(
                         efid,
                         recordNumber,
                         data,
                         null,
-                        obtainMessage(EVENT_UPDATE_EMAIL_RECORD_DONE, recordNumber, adnRecIndex,
+                        obtainMessage(EVENT_UPDATE_EMAIL_RECORD_DONE, actualRecNumber, adnRecIndex,
                                 data));
                 mPendingExtLoads = 1;
                 break;
@@ -1075,12 +1103,26 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
                     return;
                 }
 
+                actualRecNumber = recordNumber;
+                if (!mAnrPresentInIap) {
+                    efidIndex = mPbrFile.mAnrFileIds.get(getPbrIndexBy(adnRecIndex)).indexOf(efid);
+                    if (efidIndex == -1) {
+                        log("wrong efid index:" + efid );
+                        return;
+                    }
+                    actualRecNumber = recordNumber +
+                            efidIndex * mAdnLengthList.get(getPbrIndexBy(adnRecIndex));
+
+                    log("ANR index:" + efidIndex + " efid:" + efid +
+                        " actual RecNumber:" + actualRecNumber);
+                }
+
                 mFh.updateEFLinearFixed(
                         efid,
                         recordNumber,
                         data,
                         null,
-                        obtainMessage(EVENT_UPDATE_ANR_RECORD_DONE, recordNumber,
+                        obtainMessage(EVENT_UPDATE_ANR_RECORD_DONE, actualRecNumber,
                                 adnRecIndex, data));
                 mPendingExtLoads = 1;
                 break;
@@ -1144,7 +1186,7 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
                 recordNumber = (int) msg.arg2;
                 adnRecIndex = ((int) msg.arg1) - 1;
                 pbrIndex = getPbrIndexBy(adnRecIndex);
-                efid = getEfidByTag(pbrIndex, USIM_EFIAP_TAG);
+                efid = getEfidByTag(pbrIndex, USIM_EFIAP_TAG, 0);
                 int tag = (Integer) ar.userObj;
                 if (ar.exception != null) {
                     mSuccess = false;
@@ -1153,6 +1195,8 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
                     }
                     return;
                 }
+                pbrIndex = getPbrIndexBy(adnRecIndex);
+                efid = getEfidByTag(pbrIndex, USIM_EFIAP_TAG, 0);
                 recordSize = (int[]) ar.result;
                 data = null;
 
@@ -1219,9 +1263,14 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
     private class PbrFile {
         // RecNum <EF Tag, efid>
         HashMap<Integer,Map<Integer,Integer>> mFileIds;
+        // All Type1 ANR/EMAIL file will be recorded below ArrayList
+        HashMap<Integer,ArrayList<Integer>> mAnrFileIds;
+        HashMap<Integer,ArrayList<Integer>> mEmailFileIds;
 
         PbrFile(ArrayList<byte[]> records) {
             mFileIds = new HashMap<Integer, Map<Integer, Integer>>();
+            mAnrFileIds = new HashMap<Integer, ArrayList<Integer>>();
+            mEmailFileIds = new HashMap<Integer, ArrayList<Integer>>();
             SimTlv recTlv;
             int recNum = 0;
             for (byte[] record: records) {
@@ -1232,10 +1281,13 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
         }
 
         void parseTag(SimTlv tlv, int recNum) {
+            Rlog.d(LOG_TAG, "parseTag: recNum=" + recNum);
             SimTlv tlvEf;
             int tag;
             byte[] data;
             Map<Integer, Integer> val = new HashMap<Integer, Integer>();
+            ArrayList<Integer> anrList = new ArrayList<Integer>();
+            ArrayList<Integer> emailList= new ArrayList<Integer>();
             do {
                 tag = tlv.getTag();
                 switch(tag) {
@@ -1244,26 +1296,42 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
                 case USIM_TYPE2_TAG: // A9
                     data = tlv.getData();
                     tlvEf = new SimTlv(data, 0, data.length);
-                    parseEf(tlvEf, val, tag);
+                    parseEf(tlvEf, val, tag, anrList, emailList);
                     break;
                 }
             } while (tlv.nextObject());
+
+            if (0 != anrList.size()) {
+                mAnrFileIds.put(recNum, anrList);
+                Rlog.d(LOG_TAG, "parseTag: recNum=" + recNum + " ANR file list:" + anrList);
+            }
+            if (0 != emailList.size()) {
+                Rlog.d(LOG_TAG, "parseTag: recNum=" + recNum + " EMAIL file list:" + emailList);
+                mEmailFileIds.put(recNum, emailList);
+            }
             mFileIds.put(recNum, val);
         }
 
-        void parseEf(SimTlv tlv, Map<Integer, Integer> val, int parentTag) {
+        void parseEf(SimTlv tlv, Map<Integer, Integer> val, int parentTag,
+                ArrayList<Integer> anrList, ArrayList<Integer> emailList) {
             int tag;
             byte[] data;
             int tagNumberWithinParentTag = 0;
             do {
                 tag = tlv.getTag();
-                if (parentTag == USIM_TYPE2_TAG && tag == USIM_EFEMAIL_TAG) {
+                // Check if EFIAP is present. EFIAP must be under TYPE1 tag.
+                if (parentTag == USIM_TYPE1_TAG && tag == USIM_EFIAP_TAG) {
+                    mIapPresent = true;
+                }
+                if (parentTag == USIM_TYPE2_TAG && mIapPresent && tag == USIM_EFEMAIL_TAG) {
                     mEmailPresentInIap = true;
                     mEmailTagNumberInIap = tagNumberWithinParentTag;
+                    log("parseEf: EmailPresentInIap tag = " + mEmailTagNumberInIap);
                 }
-                if (parentTag == USIM_TYPE2_TAG && tag == USIM_EFANR_TAG) {
+                if (parentTag == USIM_TYPE2_TAG && mIapPresent && tag == USIM_EFANR_TAG) {
                     mAnrPresentInIap = true;
                     mAnrTagNumberInIap = tagNumberWithinParentTag;
+                    log("parseEf: AnrPresentInIap tag = " + mAnrTagNumberInIap);
                 }
                 switch(tag) {
                     case USIM_EFEMAIL_TAG:
@@ -1281,6 +1349,16 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
                         data = tlv.getData();
                         int efid = ((data[0] & 0xFF) << 8) | (data[1] & 0xFF);
                         val.put(tag, efid);
+
+                        if (parentTag == USIM_TYPE1_TAG) {
+                            if (tag == USIM_EFANR_TAG) {
+                                anrList.add(efid);
+                            } else if (tag == USIM_EFEMAIL_TAG) {
+                                emailList.add(efid);
+                            }
+                        }
+                        Rlog.d(LOG_TAG, "parseEf.put(" + tag + "," + efid + ") parent tag:"
+                                + parentTag);
                         break;
                 }
                 tagNumberWithinParentTag ++;
@@ -1298,7 +1376,7 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
         for (int j = 0; j < pbrIndex; j++) {
             count += mAnrFlags.get(j).size();
         }
-        log("getAnrCount count is" + count);
+        log("getAnrCount count is: " + count);
         return count;
     }
 
@@ -1349,25 +1427,87 @@ public class UsimPhoneBookManager extends Handler implements IccConstants {
 
     public int getEmptyEmailNum_Pbrindex(int pbrindex) {
         int count = 0;
-        if (mEmailFlags.get(pbrindex) != null) {
-          for (int i = 0; i < mEmailFlags.get(pbrindex).size(); i++) {
-              if (0 == mEmailFlags.get(pbrindex).get(i))
-                  count++;
-          }
+        int size = 0;
+
+        if (!mEmailPresentInIap) {
+            //for Type1 Email, the number is always equal to ADN
+            //log("getEmptyEmailNum_Pbrindex pbrIndex:" + pbrindex + " default to 1");
+            return 1;
         }
+
+        if (mEmailFlags.containsKey(pbrindex)) {
+            size = mEmailFlags.get(pbrindex).size();
+            for (int i = 0; i < size; i++) {
+                if (0 == mEmailFlags.get(pbrindex).get(i)) count++;
+            }
+        }
+        //log("getEmptyEmailNum_Pbrindex pbrIndex is: " + pbrindex + " size is: "
+        //        + size + ", count is " + count);
         return count;
     }
 
     public int getEmptyAnrNum_Pbrindex(int pbrindex) {
         int count = 0;
-        if (mAnrFlags.get(pbrindex) != null) {
-          for (int i = 0; i < mAnrFlags.get(pbrindex).size(); i++) {
-              if (0 == mAnrFlags.get(pbrindex).get(i))
-                  count++;
-          }
-          log("getEmptyAnrNum_Pbrindex pbrIndex is: " + pbrindex + " size is: "
-                  + mAnrFlags.get(pbrindex).size() + ", count is " + count);
+        int size = 0;
+
+        if (!mAnrPresentInIap) {
+            //for Type1 Anr, the number is always equals to ADN
+            //log("getEmptyAnrNum_Pbrindex pbrIndex:" + pbrindex + " default to 1");
+            return 1;
         }
+
+        if (mAnrFlags.containsKey(pbrindex)) {
+            size = mAnrFlags.get(pbrindex).size();
+            for (int i = 0; i < size; i++) {
+                if (0 == mAnrFlags.get(pbrindex).get(i)) count++;
+            }
+        }
+        //log("getEmptyAnrNum_Pbrindex pbrIndex is: " + pbrindex + " size is: "
+        //        + size + ", count is " + count);
         return count;
+    }
+
+    public int getEmailFilesCountEachAdn() {
+        Map <Integer,Integer> fileIds;
+        if (mPbrFile == null) {
+            Rlog.e(LOG_TAG, "mPbrFile is NULL, exiting from getEmailFilesCountEachAdn");
+            return 0;
+        } else {
+            fileIds = mPbrFile.mFileIds.get(0);
+        }
+        if (fileIds == null) return 0;
+
+        if (fileIds.containsKey(USIM_EFEMAIL_TAG)) {
+            if (!mEmailPresentInIap) {
+                return mPbrFile.mEmailFileIds.get(0).size();
+            } else {
+                return 1;
+            }
+
+        } else {
+            return 0;
+        }
+    }
+
+    public int getAnrFilesCountEachAdn() {
+        Map <Integer,Integer> fileIds;
+        if (mPbrFile == null) {
+            Rlog.e(LOG_TAG, "mPbrFile is NULL, exiting from getAnrFilesCountEachAdn");
+            return 0;
+        } else {
+            fileIds = mPbrFile.mFileIds.get(0);
+        }
+        if (fileIds == null) return 0;
+
+        if (fileIds.containsKey(USIM_EFANR_TAG)) {
+            if (!mAnrPresentInIap) {
+                return mPbrFile.mAnrFileIds.get(0).size();
+            } else {
+                return 1;
+            }
+
+        } else {
+            return 0;
+        }
     }
 }

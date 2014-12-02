@@ -631,7 +631,7 @@ public final class GsmMmiCode extends Handler implements MmiCode {
     isTwoDigitShortCode(Context context, String dialString) {
         Rlog.d(LOG_TAG, "isTwoDigitShortCode");
 
-        if (dialString == null || dialString.length() != 2) return false;
+        if (dialString == null || dialString.length() > 2) return false;
 
         if (sTwoDigitNumberPattern == null) {
             sTwoDigitNumberPattern = context.getResources().getStringArray(
@@ -668,7 +668,7 @@ public final class GsmMmiCode extends Handler implements MmiCode {
             return false;
         }
 
-        if (PhoneNumberUtils.isLocalEmergencyNumber(dialString, phone.getContext())) {
+        if (PhoneNumberUtils.isLocalEmergencyNumber(phone.getContext(), dialString)) {
             return false;
         } else {
             return isShortCodeUSSD(dialString, phone);
@@ -1190,15 +1190,6 @@ public final class GsmMmiCode extends Handler implements MmiCode {
                         if (mSc.equals(SC_PUK) || mSc.equals(SC_PUK2)) {
                             sb.append(mContext.getText(
                                     com.android.internal.R.string.badPuk));
-                            // Get the No. of attempts remaining to unlock PUK1 from the result
-                            if (ar.result != null && (((int[]) ar.result).length != 0)) {
-                                int pukAttemptsRemaining = ((int[])ar.result)[0];
-                                if (pukAttemptsRemaining >= 0) {
-                                    sb.append(mContext.getText(
-                                        com.android.internal.R.string.pinpuk_attempts));
-                                    sb.append(pukAttemptsRemaining);
-                                }
-                            }
                         } else {
                             sb.append(mContext.getText(
                                     com.android.internal.R.string.badPin));
